@@ -32,6 +32,7 @@ class AnalyzeRequest(BaseModel):
     dax_iv: float | None = None
     stoxx_price: float | None = None
     stoxx_iv: float | None = None
+    expiry_type: str = "semanal"
 
 
 class ChatRequest(BaseModel):
@@ -47,6 +48,7 @@ async def analyze(req: AnalyzeRequest):
             dax_iv=req.dax_iv,
             stoxx_price=req.stoxx_price,
             stoxx_iv=req.stoxx_iv,
+            expiry_type=req.expiry_type,
         )
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -62,7 +64,7 @@ async def analyze(req: AnalyzeRequest):
 
 
 @app.get("/api/defaults")
-async def defaults():
+async def defaults(expiry_type: str = "semanal"):
     try:
         info = {}
         for name, cfg in engine.INDICES.items():
@@ -71,10 +73,9 @@ async def defaults():
                 "yahoo_price": market["price"],
                 "yahoo_iv_pct": round(market["iv_pct"] * 100, 1) if market["iv_pct"] else None,
             }
-        expiry = engine.next_weekly_expiry()
-        dte = (expiry - engine.date.today()).days
+        exp, dte = engine.get_expiry(expiry_type)
         return {
-            "expiry": expiry.isoformat(),
+            "expiry": exp.isoformat(),
             "dte": dte,
             "defaults": info,
         }

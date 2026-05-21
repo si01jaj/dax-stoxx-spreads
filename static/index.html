@@ -51,6 +51,16 @@
 
             <div id="expiry-info" style="text-align:center;color:#8b949e;font-size:0.85rem;margin-bottom:0.75rem;"></div>
 
+            <div style="text-align:center;margin-bottom:0.75rem">
+                <label style="color:#8b949e;font-size:0.8rem;margin-right:0.5rem">Vencimiento:</label>
+                <select id="expiry-type" onchange="loadDefaults()" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:0.4rem 0.75rem;font-size:0.85rem;font-family:inherit;outline:none;cursor:pointer">
+                    <option value="semanal">Semanal</option>
+                    <option value="mensual">Mensual</option>
+                    <option value="2meses">2 meses</option>
+                    <option value="3meses">3 meses</option>
+                </select>
+            </div>
+
             <button id="analyze-btn" onclick="analyze()">Analizar spreads</button>
         </div>
 
@@ -78,10 +88,12 @@
     <script>
         async function loadDefaults() {
             try {
-                const r = await fetch('/api/defaults');
+                const expType = document.getElementById('expiry-type').value;
+                const r = await fetch('/api/defaults?expiry_type=' + expType);
                 const data = await r.json();
+                const labels = {'semanal': 'Semanal', 'mensual': 'Mensual', '2meses': '2 meses', '3meses': '3 meses'};
                 document.getElementById('expiry-info').textContent =
-                    'Vencimiento: ' + data.expiry + ' (' + data.dte + ' DTE)';
+                    labels[expType] + ' — ' + data.expiry + ' (' + data.dte + ' DTE)';
 
                 const dax = data.defaults['DAX 40'];
                 document.getElementById('dax-price').value = dax.yahoo_price.toFixed(1);
@@ -140,7 +152,8 @@
                         dax_price: getVal('dax-price'),
                         dax_iv: getVal('dax-iv') ? getVal('dax-iv') / 100 : null,
                         stoxx_price: getVal('stoxx-price'),
-                        stoxx_iv: getVal('stoxx-iv') ? getVal('stoxx-iv') / 100 : null
+                        stoxx_iv: getVal('stoxx-iv') ? getVal('stoxx-iv') / 100 : null,
+                        expiry_type: document.getElementById('expiry-type').value
                     })
                 });
                 const data = await r.json();

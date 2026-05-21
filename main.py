@@ -40,15 +40,6 @@ INDICES = {
 }
 
 
-def next_weekly_expiry() -> date:
-    today = date.today()
-    weekday = today.weekday()
-    days_to_friday = (4 - weekday) % 7
-    if days_to_friday == 0:
-        days_to_friday = 7
-    return today + timedelta(days=days_to_friday)
-
-
 def friday_week_of_month(d: date) -> int:
     """Return which week-of-month (1-5) this Friday belongs to."""
     month_start = d.replace(day=1)
@@ -70,6 +61,37 @@ def contract_ticker(name: str, expiry: date) -> str:
     if wk == 3:
         return prefix  # mensual, sin número
     return f"{prefix}{wk}"
+
+
+def get_expiry(expiry_type: str = "semanal") -> tuple[date, int]:
+    """Return (expiry_date, dte) for the chosen horizon."""
+
+    def nth_friday(year: int, month: int, n: int) -> date:
+        first = date(year, month, 1)
+        days_to_fri = (4 - first.weekday()) % 7
+        return first + timedelta(days=days_to_fri + (n - 1) * 7)
+
+    def next_friday() -> date:
+        days = (4 - date.today().weekday()) % 7
+        return date.today() + timedelta(days=7 if days == 0 else days)
+
+    today = date.today()
+
+    if expiry_type == "semanal":
+        c = next_friday()
+        d = c + timedelta(days=7) if friday_week_of_month(c) == 3 else c
+    else:
+        months_ahead = {"mensual": 0, "2meses": 1, "3meses": 2}.get(expiry_type, 0)
+        this_monthly = nth_friday(today.year, today.month, 3)
+        if this_monthly <= today:
+            months_ahead += 1
+        target_month = today.month + months_ahead
+        target_year = today.year + (target_month - 1) // 12
+        target_month = ((target_month - 1) % 12) + 1
+        d = nth_friday(target_year, target_month, 3)
+
+    dte = (d - today).days
+    return d, dte
 
 
 def fetch_market_data(name: str, cfg: dict) -> dict:
@@ -206,10 +228,12 @@ def print_summary(chain: dict):
         console.print(g_table)
 
 
-def build_prompt(indices_data: list) -> str:
-    prompt = """Actúa como un trader profesional de opciones sobre índices europeos (EUREX).
+def build_prompt(indices_data: list, expiry_type: str = "semanal") -> str:
+    labels = {"semanal": "semanal", "mensual": "mensual", "2meses": "2 meses", "3meses": "3 meses"}
+    label = labels.get(expiry_type, "semanal")
+    prompt = f"""Actúa como un trader profesional de opciones sobre índices europeos (EUREX).
 Tu especialidad son los spreads de crédito sobre DAX 40 (ODAX) y EURO STOXX 50 (OESX)
-para el vencimiento semanal más cercano.
+para el vencimiento {label}.
 
 DATOS DE MERCADO ACTUALES:
 """
@@ -260,10 +284,10 @@ def run_analysis(
     dax_iv: float | None = None,
     stoxx_price: float | None = None,
     stoxx_iv: float | None = None,
+    expiry_type: str = "semanal",
 ) -> dict:
     """Run full analysis and return structured results."""
-    expiry = next_weekly_expiry()
-    dte = (expiry - date.today()).days
+    expiry, dte = get_expiry(expiry_type)
     chains = []
 
     overrides = {}
@@ -289,12 +313,13 @@ def run_analysis(
     if not chains:
         return {"error": "No market data available"}
 
-    prompt = build_prompt(chains)
+    prompt = build_prompt(chains, expiry_type)
     response = query_llm(prompt)
 
     return {
         "expiry": expiry.isoformat(),
         "dte": dte,
+        "expiry_type": expiry_type,
         "data": overrides,
         "chains": chains,
         "response": response,
@@ -309,13 +334,24 @@ def main():
 
     console.print(Panel.fit(
         "[bold cyan]DAX & STOXX 50 - Spread Recomendador[/bold cyan]\n"
-        "[dim]Análisis del próximo vencimiento semanal con IA[/dim]",
+        "[dim]Análisis de vencimientos con IA[/dim]",
         border_style="cyan",
     ))
 
-    expiry = next_weekly_expiry()
-    dte = (expiry - date.today()).days
-    console.print(f"\n[cyan]Vencimiento semanal:[/cyan] {expiry.isoformat()} ([yellow]{dte} DTE[/yellow])\n")
+    console.print("\n[bold yellow]Elige vencimiento:[/bold yellow]")
+    console.print("  1. Semanal (próximo viernes no mensual)")
+    console.print("  2. Mensual (próximo 3er viernes)")
+    console.print("  3. 2 meses")
+    console.print("  4. 3 meses")
+    try:
+        opt = input("  Opción [1]: ").strip()
+        expiry_type = {"1": "semanal", "2": "mensual", "3": "2meses", "4": "3meses"}.get(opt, "semanal")
+    except (EOFError, KeyboardInterrupt):
+        expiry_type = "semanal"
+
+    exp, dte = get_expiry(expiry_type)
+    labels = {"semanal": "Semanal", "mensual": "Mensual", "2meses": "2 meses", "3meses": "3 meses"}
+    console.print(f"\n[cyan]Vencimiento {labels[expiry_type]}:[/cyan] {exp.isoformat()} ([yellow]{dte} DTE[/yellow])\n")
 
     dax_inputs = {}
     stoxx_inputs = {}
@@ -356,6 +392,7 @@ def main():
             dax_iv=dax_inputs.get("iv"),
             stoxx_price=stoxx_inputs.get("price"),
             stoxx_iv=stoxx_inputs.get("iv"),
+            expiry_type=expiry_type,
         )
 
     if "error" in result:
