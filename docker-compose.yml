@@ -1,0 +1,9 @@
+services:
+  dax-stoxx:
+    build: .
+    container_name: dax-stoxx-spreads
+    env_file:
+      - .env
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
