@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAX & STOXX 50 - Spread Recomendador</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DAX & STOXX 50 — Spread Recomendador</h1>
+            <p>Análisis del próximo vencimiento semanal con IA (DeepSeek V4)</p>
+        </header>
+
+        <div id="params">
+            <div class="card">
+                <h3>DAX 40 (ODAX)</h3>
+                <div class="row">
+                    <div class="col">
+                        <label>Precio subyacente</label>
+                        <input type="text" id="dax-price" placeholder="Cargando...">
+                        <div class="hint" id="dax-price-hint"></div>
+                    </div>
+                    <div class="col">
+                        <label>IV ATM %</label>
+                        <input type="text" id="dax-iv" placeholder="Cargando...">
+                        <div class="hint" id="dax-iv-hint"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>EURO STOXX 50 (OESX)</h3>
+                <div class="row">
+                    <div class="col">
+                        <label>Precio subyacente</label>
+                        <input type="text" id="stoxx-price" placeholder="Cargando...">
+                        <div class="hint" id="stoxx-price-hint"></div>
+                    </div>
+                    <div class="col">
+                        <label>IV ATM %</label>
+                        <input type="text" id="stoxx-iv" placeholder="Cargando...">
+                        <div class="hint" id="stoxx-iv-hint"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="expiry-info" style="text-align:center;color:#8b949e;font-size:0.85rem;margin-bottom:0.75rem;"></div>
+
+            <button id="analyze-btn" onclick="analyze()">Analizar spreads</button>
+        </div>
+
+        <div id="loading">
+            <span class="spinner"></span>
+            <span>Analizando con DeepSeek V4...</span>
+        </div>
+
+        <div id="output" class="card"></div>
+
+        <div class="disclaimer">
+            Esta herramienta es para fines educativos y de análisis. No constituye consejo financiero.
+        </div>
+    </div>
+
+    <script>
+        async function loadDefaults() {
+            try {
+                const r = await fetch('/api/defaults');
+                const data = await r.json();
+                document.getElementById('expiry-info').textContent =
+                    'Vencimiento: ' + data.expiry + ' (' + data.dte + ' DTE)';
+
+                const dax = data.defaults['DAX 40'];
+                document.getElementById('dax-price').value = dax.yahoo_price.toFixed(1);
+                document.getElementById('dax-price').placeholder = dax.yahoo_price.toFixed(1);
+                const daxIv = dax.yahoo_iv_pct;
+                if (daxIv) {
+                    document.getElementById('dax-iv').value = daxIv.toFixed(1);
+                    document.getElementById('dax-iv-hint').textContent = 'Yahoo: ' + daxIv.toFixed(1) + '%';
+                } else {
+                    document.getElementById('dax-iv').placeholder = 'Ej: 25.6';
+                    document.getElementById('dax-iv-hint').textContent = 'No disponible en Yahoo';
+                }
+
+                const stoxx = data.defaults['EURO STOXX 50'];
+                document.getElementById('stoxx-price').value = stoxx.yahoo_price.toFixed(1);
+                document.getElementById('stoxx-price').placeholder = stoxx.yahoo_price.toFixed(1);
+                const stoxxIv = stoxx.yahoo_iv_pct;
+                if (stoxxIv) {
+                    document.getElementById('stoxx-iv').value = stoxxIv.toFixed(1);
+                    document.getElementById('stoxx-iv-hint').textContent = 'Yahoo: ' + stoxxIv.toFixed(1) + '%';
+                } else {
+                    document.getElementById('stoxx-iv').placeholder = 'Ej: 20.0';
+                    document.getElementById('stoxx-iv-hint').textContent = 'No disponible en Yahoo';
+                }
+
+                document.getElementById('dax-price-hint').textContent = 'Yahoo: ' + dax.yahoo_price.toFixed(1);
+                document.getElementById('stoxx-price-hint').textContent = 'Yahoo: ' + stoxx.yahoo_price.toFixed(1);
+            } catch(e) {
+                document.getElementById('expiry-info').textContent = 'Error cargando datos de Yahoo: ' + e.message;
+            }
+        }
+
+        function getVal(id) {
+            const v = document.getElementById(id).value.trim().replace(',', '');
+            return v ? parseFloat(v) : null;
+        }
+
+        async function analyze() {
+            const btn = document.getElementById('analyze-btn');
+            const loading = document.getElementById('loading');
+            const output = document.getElementById('output');
+
+            btn.disabled = true;
+            loading.style.display = 'flex';
+            output.style.display = 'none';
+            output.innerHTML = '';
+
+            try {
+                const r = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        dax_price: getVal('dax-price'),
+                        dax_iv: getVal('dax-iv') ? getVal('dax-iv') / 100 : null,
+                        stoxx_price: getVal('stoxx-price'),
+                        stoxx_iv: getVal('stoxx-iv') ? getVal('stoxx-iv') / 100 : null
+                    })
+                });
+                const data = await r.json();
+                output.innerHTML = marked.parse(data.response || data.error || 'Sin respuesta');
+                output.style.display = 'block';
+            } catch(e) {
+                output.innerHTML = '<p style="color:#f85149">Error: ' + e.message + '</p>';
+                output.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+
+        loadDefaults();
+    </script>
+</body>
+</html>

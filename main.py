@@ -255,6 +255,52 @@ def query_llm(prompt: str) -> str:
     return response.choices[0].message.content
 
 
+def run_analysis(
+    dax_price: float | None = None,
+    dax_iv: float | None = None,
+    stoxx_price: float | None = None,
+    stoxx_iv: float | None = None,
+) -> dict:
+    """Run full analysis and return structured results."""
+    expiry = next_weekly_expiry()
+    dte = (expiry - date.today()).days
+    chains = []
+
+    overrides = {}
+    for name, cfg in INDICES.items():
+        try:
+            market = fetch_market_data(name, cfg)
+        except Exception as e:
+            return {"error": str(e)}
+        yahoo_price = market["price"]
+        yahoo_iv = market["iv_pct"]
+
+        if name == "DAX 40":
+            price = dax_price if dax_price is not None else yahoo_price
+            iv = dax_iv if dax_iv is not None else (yahoo_iv or 0.20)
+        else:
+            price = stoxx_price if stoxx_price is not None else yahoo_price
+            iv = stoxx_iv if stoxx_iv is not None else (yahoo_iv or 0.20)
+
+        chain = build_chain(name, price, iv, dte, cfg, expiry)
+        chains.append(chain)
+        overrides[name] = {"yahoo_price": yahoo_price, "yahoo_iv": yahoo_iv, "used_price": price, "used_iv": iv}
+
+    if not chains:
+        return {"error": "No market data available"}
+
+    prompt = build_prompt(chains)
+    response = query_llm(prompt)
+
+    return {
+        "expiry": expiry.isoformat(),
+        "dte": dte,
+        "data": overrides,
+        "chains": chains,
+        "response": response,
+    }
+
+
 def main():
     if not DEEPSEEK_API_KEY:
         console.print("[red]ERROR: DEEPSEEK_API_KEY no configurada.[/red]")
@@ -271,8 +317,12 @@ def main():
     dte = (expiry - date.today()).days
     console.print(f"\n[cyan]Vencimiento semanal:[/cyan] {expiry.isoformat()} ([yellow]{dte} DTE[/yellow])\n")
 
-    chains = []
-    for name, cfg in INDICES.items():
+    dax_inputs = {}
+    stoxx_inputs = {}
+    for name, cfg, inputs in [
+        ("DAX 40", INDICES["DAX 40"], dax_inputs),
+        ("EURO STOXX 50", INDICES["EURO STOXX 50"], stoxx_inputs),
+    ]:
         with console.status(f"[cyan]Obteniendo datos de {name}...[/cyan]"):
             try:
                 market = fetch_market_data(name, cfg)
@@ -287,33 +337,36 @@ def main():
         console.print(f"  [dim]Ingresa tus datos reales (Enter para usar el de Yahoo):[/dim]")
 
         try:
-            price_input = input(f"  Precio subyacente [{yahoo_price:,.1f}]: ").strip().replace(",", "")
-            price = float(price_input) if price_input else yahoo_price
+            pi = input(f"  Precio subyacente [{yahoo_price:,.1f}]: ").strip().replace(",", "")
+            inputs["price"] = float(pi) if pi else None
         except (ValueError, EOFError):
-            price = yahoo_price
+            inputs["price"] = None
 
         iv_str = f"{yahoo_iv*100:.1f}" if yahoo_iv else ""
         try:
-            iv_input = input(f"  IV ATM % [{iv_str}]: ").strip().replace("%", "")
-            iv = float(iv_input) / 100.0 if iv_input else (yahoo_iv or 0.20)
+            ii = input(f"  IV ATM % [{iv_str}]: ").strip().replace("%", "")
+            inputs["iv"] = float(ii) / 100.0 if ii else None
         except (ValueError, EOFError):
-            iv = yahoo_iv or 0.20
-
-        chain = build_chain(market["name"], price, iv, dte, cfg, expiry)
-        chains.append(chain)
-        print_summary(chain)
-        console.print()
-
-    if not chains:
-        console.print("[red]No hay datos de mercado para analizar.[/red]")
-        sys.exit(1)
+            inputs["iv"] = None
 
     console.print("\n[bold magenta]── Consultando a DeepSeek V4... ──[/bold magenta]\n")
     with console.status("[cyan]Analizando spreads con IA...[/cyan]", spinner="dots"):
-        prompt = build_prompt(chains)
-        response = query_llm(prompt)
+        result = run_analysis(
+            dax_price=dax_inputs.get("price"),
+            dax_iv=dax_inputs.get("iv"),
+            stoxx_price=stoxx_inputs.get("price"),
+            stoxx_iv=stoxx_inputs.get("iv"),
+        )
 
-    console.print(Panel.fit(response, border_style="green", title="📈 Recomendaciones AI"))
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        return
+
+    for chain in result["chains"]:
+        print_summary(chain)
+        console.print()
+
+    console.print(Panel.fit(result["response"], border_style="green", title="📈 Recomendaciones AI"))
     console.print()
 
 
