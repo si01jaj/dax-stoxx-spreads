@@ -61,6 +61,15 @@
 
         <div id="output" class="card"></div>
 
+        <div id="chat-section" style="display:none" class="card">
+            <h3>💬 Conversar sobre el análisis</h3>
+            <div id="chat-history"></div>
+            <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
+                <input type="text" id="chat-input" placeholder="Pregunta: ¿por qué Bear Call y no Iron Condor?" style="flex:1">
+                <button id="chat-btn" onclick="sendChat()" style="background:#238636;border:none;border-radius:6px;color:#fff;padding:0.5rem 1rem;cursor:pointer;font-weight:600">Enviar</button>
+            </div>
+        </div>
+
         <div class="disclaimer">
             Esta herramienta es para fines educativos y de análisis. No constituye consejo financiero.
         </div>
@@ -114,11 +123,14 @@
             const btn = document.getElementById('analyze-btn');
             const loading = document.getElementById('loading');
             const output = document.getElementById('output');
+            const chatSection = document.getElementById('chat-section');
 
             btn.disabled = true;
             loading.style.display = 'flex';
             output.style.display = 'none';
             output.innerHTML = '';
+            chatSection.style.display = 'none';
+            document.getElementById('chat-history').innerHTML = '';
 
             try {
                 const r = await fetch('/api/analyze', {
@@ -134,6 +146,7 @@
                 const data = await r.json();
                 output.innerHTML = marked.parse(data.response || data.error || 'Sin respuesta');
                 output.style.display = 'block';
+                chatSection.style.display = 'block';
             } catch(e) {
                 output.innerHTML = '<p style="color:#f85149">Error: ' + e.message + '</p>';
                 output.style.display = 'block';
@@ -142,6 +155,37 @@
                 loading.style.display = 'none';
             }
         }
+
+        async function sendChat() {
+            const input = document.getElementById('chat-input');
+            const btn = document.getElementById('chat-btn');
+            const history = document.getElementById('chat-history');
+            const msg = input.value.trim();
+            if (!msg) return;
+
+            history.innerHTML += '<div style="color:#58a6ff;margin:0.5rem 0"><strong>Tú:</strong> ' + marked.parse(msg) + '</div>';
+            input.value = '';
+            btn.disabled = true;
+
+            try {
+                const r = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: msg})
+                });
+                const data = await r.json();
+                history.innerHTML += '<div style="color:#c9d1d9;margin:0.75rem 0">' + marked.parse(data.response || data.error || '') + '</div>';
+                history.scrollTop = history.scrollHeight;
+            } catch(e) {
+                history.innerHTML += '<div style="color:#f85149;margin:0.5rem 0">Error: ' + e.message + '</div>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        document.getElementById('chat-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') sendChat();
+        });
 
         loadDefaults();
     </script>
