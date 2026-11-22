@@ -204,7 +204,7 @@ def print_summary(chain: dict):
     console.print(t)
 
     if chain["options"]:
-        g_table = Table(title=f"Greeks por strike (rejilla sintética)")
+        g_table = Table(title="Greeks por strike (rejilla sintética)")
         g_table.add_column("Strike", style="cyan")
         g_table.add_column("Call Δ", style="green")
         g_table.add_column("Put Δ", style="red")
@@ -370,7 +370,7 @@ def main():
         yahoo_iv = market["iv_pct"]
 
         console.print(f"\n[bold]{name}[/bold] — Yahoo detectó: [cyan]Precio={yahoo_price:,.1f}[/cyan] [cyan]IV={yahoo_iv*100:.1f}%[/cyan]" if yahoo_iv else f"\n[bold]{name}[/bold] — Yahoo detectó: [cyan]Precio={yahoo_price:,.1f}[/cyan] [yellow]IV no disponible[/yellow]")
-        console.print(f"  [dim]Ingresa tus datos reales (Enter para usar el de Yahoo):[/dim]")
+        console.print("  [dim]Ingresa tus datos reales (Enter para usar el de Yahoo):[/dim]")
 
         try:
             pi = input(f"  Precio subyacente [{yahoo_price:,.1f}]: ").strip().replace(",", "")
