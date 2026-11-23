@@ -4,7 +4,7 @@ Recomendador de estructuras de crédito sobre **DAX 40 (ODAX)** y **EURO STOXX 5
 Todo el cálculo es determinista y verificable; el LLM (opcional) solo redacta sobre
 números ya calculados.
 
-> v2.1 — motor determinista y datos manuales. Ver [Cambios frente a la v1](#cambios-frente-a-la-v1).
+> v2.2 — motor determinista, datos manuales y estructuras de crédito y débito. Ver [Cambios frente a la v1](#cambios-frente-a-la-v1).
 
 ---
 
@@ -18,25 +18,45 @@ Para cada índice y vencimiento:
 2. **Primas teóricas** con Black-Scholes sobre el forward, con **superficie de
    volatilidad** (nivel ATM + pendiente de skew) y **dividendo** (0% en el DAX, que es
    índice de rendimiento total; ~3% en el EURO STOXX 50, que es índice de precios).
-3. **Estructuras construidas por delta objetivo**, no por rejilla: bull put, bear call
-   e iron condor, con anchos configurables en ticks (50 pts en ODAX, 25 en OESX).
-4. **Métricas deterministas**: crédito, máx. beneficio, máx. pérdida, breakevens,
-   POP implícita y real, valor esperado y ROC sobre el riesgo del spread.
+3. **Estructuras construidas por delta objetivo**, no por rejilla, y evaluadas todas
+   con la misma vara:
+
+   | Clase | Estructuras | Código |
+   |---|---|---|
+   | Crédito (cobras prima) | bull put, bear call, iron condor | BP, BC, IC |
+   | Débito (pagas prima) | bull call, bear put, straddle, strangle | BCd, BPd, STD, STR |
+
+   Se muestran **las 2 mejores de cada clase** (no más), ordenadas por EV/riesgo.
+4. **Métricas deterministas**: prima neta, beneficio y pérdida máximos, breakevens,
+   POP implícita y real, valor esperado y ROC.
 5. **Escenarios** de P&L a vencimiento en ±1σ y ±2σ.
+
+### Crédito o débito: quién decide
+
+No hay una dirección preferida por diseño. El EV de cada estructura se calcula con
+**una sola hipótesis: la volatilidad que esperas realizar** (`RV`).
+
+- **RV < IV** → sesgo *vender*: la prima está cara, ganan los créditos.
+- **RV > IV** → sesgo *comprar*: la prima está barata, ganan los débitos y los straddles.
+- **Igualadas** → sin ventaja; apenas pasa nada los filtros.
+
+Si no aportas `RV`, se asume `IV × REALIZED_VOL_FACTOR` (0,90 por defecto), es decir,
+sesgo *vender*. Aun así pueden aparecer débitos con EV positivo por **valor relativo
+del skew** (comprar el strike cercano y vender el OTM más caro en vol), que es una
+ventaja real y no un error.
 
 ### POP y EV: qué son exactamente
 
 | Métrica | Definición |
 |---|---|
-| `pop_rn` | Probabilidad *que descuenta el mercado*: 1 − \|Δ\| de la pata corta |
-| `pop` | P(beneficio a vencimiento) integrando el payoff con **σ realizada** = σ ATM × `realized_vol_factor` (0,90 por defecto) |
-| `ev_pts` | ∫ payoff · densidad lognormal con deriva de forward (r−q). **No se asume dirección**, solo que la vol realizada difiere de la implícita |
-| `roc` | crédito / máx pérdida del spread (no sobre margen PRMS de Eurex) |
-| `score` | EV / máx pérdida; ordena los candidatos |
+| `pop_rn` | Probabilidad *que descuenta el mercado*: 1 − Σ\|Δ\| de las patas cortas |
+| `pop` | P(beneficio a vencimiento) integrando el payoff con la **vol realizada** |
+| `ev_pts` | ∫ payoff · densidad lognormal con deriva de forward (r−q). **No se asume dirección del índice**, solo la vol |
+| `roc` | beneficio máximo / pérdida máxima. `null` cuando el beneficio es ilimitado (straddle, strangle) |
+| `score` | EV / pérdida máxima; ordena los candidatos |
 
-Con `realized_vol_factor = 1.0` el EV vuelve a ≈0: es la comprobación de que el
-modelo no regala ventaja. La ventaja, si existe, viene del diferencial entre vol
-implícita y realizada.
+Con `RV = IV` y **sin skew**, el EV vuelve a ≈0: es la comprobación de que el modelo
+no regala ventaja. La ventaja, si existe, viene del diferencial IV/RV y del skew.
 
 ---
 
@@ -49,9 +69,13 @@ pip install -r requirements.txt
 # La IV se copia de tu bróker, en % tal cual (25.6) o en fracción (0.256)
 python main.py --expiry semanal --iv DAX=25.6 --iv STOXX=22.0 --no-llm
 
+# Con vol realizada esperada: decide si conviene comprar o vender prima
+python main.py --expiry semanal --iv DAX=25.6 --rv DAX=32 --no-llm   # sesgo comprar
+python main.py --expiry semanal --iv DAX=25.6 --rv DAX=22 --no-llm   # sesgo vender
+
 # Precio a mano también (entonces solo se usa el calendario, cero red)
 python main.py --expiry 2m --spot DAX=25000 --spot STOXX=6000 \
-               --iv DAX=24 --iv STOXX=21 --no-llm
+               --iv DAX=24 --iv STOXX=21 --rv DAX=26 --no-llm
 
 # Salida completa en JSON (para guardar, comparar o procesar)
 python main.py --expiry 3m --iv DAX=23.5 --json > analisis.json
@@ -130,6 +154,7 @@ llega por `http://127.0.0.1:8001` sin abrir puertos en el cortafuegos.
 | `LLM_MODEL` / `LLM_BASE_URL` / `LLM_TIMEOUT` | `deepseek-chat` / api.deepseek.com / 90 | proveedor del LLM |
 | `IV_PROVIDER` | `none` | `none` = IV manual, sin red; `yahoo` = intentarla (hoy 404) |
 | `SPOT_PROVIDER` | `yahoo` | `yahoo` precarga el contado; `manual` no sale a internet |
+| `REALIZED_VOL_FACTOR` | `0.90` | vol realizada asumida = IV × este factor cuando no aportas RV |
 | `VOL_SKEW` | `0.0217` | pendiente de skew (vol absoluta por unidad de z) |
 | `RISK_FREE_RATE` | `0.025` | tipo sin riesgo para el forward |
 | `ALLOW_IV_FALLBACK` | `0` | `1` = usar `DEFAULT_IV` marcándolo como **ASUMIDA** |
@@ -167,10 +192,11 @@ pip install pytest httpx
 python -m pytest -q
 ```
 
-47 tests: festivos y rollback del mensual, regresión del 25/12 y del Viernes Santo,
-DTE con hora, paridad put-call, delta/vega, IV ida y vuelta, skew, aritmética de
-spreads (max pérdida, breakeven, payoff en extremos), EV≈0 sin prima de vol,
-diversidad del ranking, validación de la API, auth por token y acotado de sesiones.
+63 tests: festivos y rollback del mensual, regresión del 25/12 y del Viernes Santo,
+DTE con hora, paridad put-call, delta/vega, IV ida y vuelta, skew, aritmética de las
+siete estructuras (prima, max beneficio/pérdida, breakeven, payoff en extremos),
+EV≈0 sin prima de vol, dirección compra/venta según RV, valor relativo del skew,
+ranking de 2 por clase, validación de la API, auth por token y acotado de sesiones.
 
 ---
 
@@ -197,6 +223,8 @@ diversidad del ranking, validación de la API, auth por token y acotado de sesio
 | v1 | v2 |
 |---|---|
 | Rejilla de strikes ±6% con IV plana ATM | Estructuras por delta objetivo con superficie ATM + skew |
+| Solo bull put, bear call e iron condor | + bull call, bear put, straddle y strangle; la dirección la decide el EV |
+| 12 candidatos ordenados por score (los cóndores copaban la tabla) | las 2 mejores de cada clase |
 | Sin primas: el LLM inventaba crédito, POP, ROC y BE | Primas, POP, EV, ROC y BE calculados en Python |
 | Solo se enviaban 7 strikes al LLM; las alas eran inventadas | El LLM recibe la tabla ya calculada y solo redacta (JSON validado) |
 | IV de Yahoo con fallback silencioso a 20% | Sin IV → error explícito; fallback opcional y marcado como ASUMIDA |

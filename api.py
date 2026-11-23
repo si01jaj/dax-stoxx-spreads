@@ -29,7 +29,7 @@ import analyst
 import main as engine
 import marketdata
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 APP_TOKEN = os.getenv("APP_TOKEN", "")
 _cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
@@ -61,6 +61,8 @@ class AnalyzeRequest(BaseModel):
     dax_iv: float | None = Field(default=None, gt=0.01, le=3.0, description="IV ATM en tanto por uno")
     stoxx_price: float | None = Field(default=None, gt=0, lt=1_000_000)
     stoxx_iv: float | None = Field(default=None, gt=0.01, le=3.0)
+    dax_rv: float | None = Field(default=None, gt=0.01, le=3.0, description="vol realizada esperada")
+    stoxx_rv: float | None = Field(default=None, gt=0.01, le=3.0)
     narrative: bool = True
     min_pop: float | None = Field(default=None, ge=0.5, le=0.99)
     session_id: str = Field(default="default", max_length=64)
@@ -106,19 +108,24 @@ def _context(payload: dict) -> str:
     ]
     for index, info in payload["contracts"].items():
         market = payload["markets"][index]
+        regime = market.get("regime", {})
         lines.append(
             f"{index} {info['ticker']} vence {info['expiry']} ({info['dte_days']:.2f} días), "
             f"spot {market['spot']['value']:.1f} (fuente {market['spot']['source']}), "
-            f"IV ATM {(market['atm_iv']['value'] or 0) * 100:.1f}% (fuente {market['atm_iv']['source']})."
+            f"IV ATM {(market['atm_iv']['value'] or 0) * 100:.1f}% (fuente {market['atm_iv']['source']}), "
+            f"vol realizada esperada {regime.get('realized_vol_pct')}% (fuente {regime.get('source')}), "
+            f"sesgo {regime.get('bias')}."
         )
     for index, rows in payload["candidates"].items():
         for row in rows:
             legs = " / ".join(f"{l['side']} {l['kind']} {l['strike']:.0f}" for l in row["legs"])
+            max_p = "ilimitado" if row["max_profit_eur"] is None else f"{row['max_profit_eur']} EUR"
+            roc = "n/a" if row["roc"] is None else f"{row['roc']:.1%}"
             lines.append(
-                f"[{row['id']}] {row['name']} ({legs}): crédito {row['credit_pts']} pts "
-                f"({row['credit_eur']} EUR), maxP {row['max_profit_eur']} EUR, "
+                f"[{row['id']}] {row['name']} ({row['direction']}, {legs}): prima {row['premium_pts']} pts "
+                f"({row['premium_eur']} EUR), maxP {max_p}, "
                 f"maxL {row['max_loss_eur']} EUR, POP {row['pop']:.0%}, EV {row['ev_pts']} pts, "
-                f"ROC {row['roc']:.1%}, BE {row['breakevens']}"
+                f"ROC {roc}, BE {row['breakevens']}"
             )
     return "\n".join(lines)
 
@@ -208,6 +215,7 @@ def analyze(req: AnalyzeRequest) -> dict:
             expiry_type=req.expiry_type,
             spot_overrides={"DAX": req.dax_price, "STOXX": req.stoxx_price},
             iv_overrides={"DAX": req.dax_iv, "STOXX": req.stoxx_iv},
+            rv_overrides={"DAX": req.dax_rv, "STOXX": req.stoxx_rv},
             use_llm=req.narrative,
             config=cfg,
         )

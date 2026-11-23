@@ -49,15 +49,43 @@ def test_analyze_devuelve_candidatos_coherentes(client):
     rows = payload["candidates"]["DAX"]
     assert rows, "debería haber alguna estructura aceptada"
     for row in rows:
+        prem = row["premium_pts"]
         width = row["width_pts"]
-        credit = row["credit_pts"]
-        assert row["max_loss_eur"] == pytest.approx((width - credit) * 5, abs=0.1)
-        assert row["max_profit_eur"] == pytest.approx(credit * 5, abs=0.1)
-        assert 0.0 < row["pop"] < 1.0
-        assert row["roc"] == pytest.approx(credit / (width - credit), abs=1e-3)
+        if row["direction"] == "credit":
+            assert row["max_loss_eur"] == pytest.approx((width - prem) * 5, abs=0.2)
+            assert row["max_profit_eur"] == pytest.approx(prem * 5, abs=0.2)
+            assert row["roc"] == pytest.approx(prem / (width - prem), abs=1e-3)
+        elif width is None:                      # straddle / strangle
+            assert row["max_loss_eur"] == pytest.approx(-prem * 5, abs=0.2)
+            assert row["max_profit_eur"] is None and row["roc"] is None
+        else:                                    # vertical de débito
+            assert row["max_loss_eur"] == pytest.approx(-prem * 5, abs=0.2)
+            assert row["max_profit_eur"] == pytest.approx((width + prem) * 5, abs=0.2)
+            assert row["roc"] == pytest.approx((width + prem) / (-prem), abs=1e-3)
+        assert 0.0 <= row["pop"] <= 1.0
         assert row["accepted"] is True
         for leg in row["legs"]:
             assert leg["strike"] % 50 == 0
+
+
+def test_con_rv_alta_aparecen_estructuras_de_debito(client):
+    """Si la vol realizada esperada supera la implícita, el motor propone comprar."""
+    body = {**BODY, "dax_rv": 0.32, "stoxx_rv": 0.30, "narrative": False}
+    payload = client.post("/api/analyze", json=body).json()
+    assert payload["markets"]["DAX"]["regime"]["bias"] == "comprar"
+    assert payload["markets"]["DAX"]["realized_vol"]["source"] == "manual"
+    kinds = {row["kind"] for row in payload["candidates"]["DAX"]}
+    assert kinds & {"bull_call", "bear_put", "straddle", "strangle"}, kinds
+
+
+def test_sin_rv_el_sesgo_asumido_es_vender(client):
+    payload = client.post("/api/analyze", json=BODY).json()
+    regime = payload["markets"]["DAX"]["regime"]
+    assert regime["source"] == "assumed"
+    assert regime["bias"] == "vender"
+    # la mayoría serán de crédito; puede colarse algún débito por valor relativo del skew
+    creditos = [r for r in payload["candidates"]["DAX"] if r["direction"] == "credit"]
+    assert len(creditos) >= 2
 
 
 def test_iv_manual_se_respeta_y_se_marca_como_tal(client):

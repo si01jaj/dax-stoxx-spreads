@@ -1,12 +1,12 @@
-"""Motor de análisis de estructuras de crédito sobre ODAX y OESX.
+"""Motor de análisis de estructuras sobre ODAX y OESX.
 
 Uso CLI:
-    python main.py --expiry semanal --iv DAX=0.256 --no-llm
+    python main.py --expiry semanal --iv DAX=25.6 --rv DAX=28 --no-llm
     python main.py --expiry 2m --json > analisis.json
 
-El resultado es siempre el mismo diccionario que consume la API: mercados con
-su fuente de dato, contratos elegidos, tabla de candidatos calculada y, si se
-pide, la redacción del LLM.
+El resultado es el mismo diccionario que consume la API: mercados con su fuente
+de dato, contratos elegidos, tabla de candidatos calculada y, si se pide, la
+redacción del LLM.
 """
 from __future__ import annotations
 
@@ -19,7 +19,13 @@ from datetime import datetime, timezone
 from eurex_calendar import SPECS, ExpiryKind, select_contract
 from marketdata import build_snapshot
 from pricing import VolSurface
-from structures import CandidateConfig, build_candidates, rank
+from structures import (
+    CREDIT_KINDS,
+    DEBIT_KINDS,
+    CandidateConfig,
+    build_candidates,
+    rank,
+)
 
 INDICES = ("DAX", "STOXX")
 
@@ -54,11 +60,34 @@ def _parse_pairs(values: list[str] | None, percent: bool = False) -> dict[str, f
     return out
 
 
+def _regime(atm_iv: float, sigma_rw: float, source: str) -> dict:
+    """Dirección sugerida según IV vs vol realizada esperada."""
+    ratio = sigma_rw / atm_iv if atm_iv > 0 else 1.0
+    if ratio >= 1.05:
+        bias = "comprar"
+        why = "la vol que esperas realizar está por encima de la implícita: la prima está barata"
+    elif ratio <= 0.95:
+        bias = "vender"
+        why = "la vol que esperas realizar está por debajo de la implícita: la prima está cara"
+    else:
+        bias = "neutral"
+        why = "IV y vol realizada esperada están prácticamente igualadas: sin ventaja clara"
+    return {
+        "atm_iv_pct": round(atm_iv * 100, 2),
+        "realized_vol_pct": round(sigma_rw * 100, 2),
+        "ratio": round(ratio, 3),
+        "source": source,          # "manual" | "assumed"
+        "bias": bias,
+        "why": why,
+    }
+
+
 def run_analysis(
     indices: tuple[str, ...] = INDICES,
     expiry_type: str = "semanal",
     spot_overrides: dict[str, float | None] | None = None,
     iv_overrides: dict[str, float | None] | None = None,
+    rv_overrides: dict[str, float | None] | None = None,
     use_llm: bool = True,
     risk_free: float | None = None,
     skew: float | None = None,
@@ -97,14 +126,23 @@ def run_analysis(
             payload["errors"][index] = str(exc)
             continue
 
-        payload["markets"][index] = snapshot.to_dict()
-        payload["warnings"].extend(snapshot.warnings)
-
         spot = snapshot.spot.value
         atm_iv = snapshot.atm_iv.value
-        if spot is None or atm_iv is None:      # build_snapshot ya lo impide, pero cerramos el tipo
+        if spot is None or atm_iv is None:
             payload["errors"][index] = "dato de mercado incompleto"
             continue
+
+        rv_manual = (rv_overrides or {}).get(index)
+        source = "manual" if rv_manual else "assumed"
+        sigma_rw = float(rv_manual) if rv_manual else atm_iv * cfg.realized_vol_factor
+        regime = _regime(atm_iv, sigma_rw, source)
+
+        payload["markets"][index] = {
+            **snapshot.to_dict(),
+            "realized_vol": {"value": round(sigma_rw, 4), "source": source},
+            "regime": regime,
+        }
+        payload["warnings"].extend(snapshot.warnings)
 
         dte_days = contract.days_to_expiry(now)
         surface = VolSurface(atm=atm_iv, skew=sk)
@@ -123,7 +161,9 @@ def run_analysis(
             "dividend_yield": spec.q,
         }
 
-        candidates = build_candidates(index, contract, spot, surface, r, cfg)
+        candidates = build_candidates(
+            index, contract, spot, surface, r, cfg, sigma_realized=sigma_rw
+        )
         accepted = rank(candidates, cfg)
         rejected = [c for c in candidates if not c.accepted]
         payload["candidates"][index] = [c.to_dict() for c in accepted]
@@ -152,12 +192,32 @@ def _top_reasons(rejected: list) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Salida por terminal
 # --------------------------------------------------------------------------- #
+_ETIQUETA = {
+    "bull_put": "BP",
+    "bear_call": "BC",
+    "iron_condor": "IC",
+    "bull_call": "BCd",
+    "bear_put": "BPd",
+    "straddle": "STD",
+    "strangle": "STR",
+}
+
+
+def _fmt_eur(value: float | None, signo: bool = False) -> str:
+    if value is None:
+        return "∞"
+    pref = "+" if signo and value > 0 else ""
+    return f"{pref}{value:,.0f}€".replace(",", ".")
+
+
 def render(payload: dict) -> None:
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
 
     console = Console()
+    if console.width < 100:            # evita que rich trunque las columnas
+        console = Console(width=100)
     console.print(
         Panel.fit(
             f"[bold cyan]Eurex — ODAX / OESX[/bold cyan]  vencimiento [bold]{payload['expiry_type']}[/bold]\n"
@@ -174,53 +234,84 @@ def render(payload: dict) -> None:
     for index, info in payload["contracts"].items():
         market = payload["markets"][index]
         iv = market["atm_iv"]
+        regime = market["regime"]
         console.print(
-            f"\n[bold]{index}[/bold] — [cyan]{info['ticker']}[/cyan] vence {info['expiry']} "
-            f"a las {info['expiry_time_cet']} CET → [yellow]{info['dte_days']:.2f} días[/yellow]\n"
-            f"  spot {market['spot']['value']:,.1f} ([dim]{market['spot']['source']}[/dim]) · "
-            f"IV ATM {(iv['value'] or 0) * 100:.1f}% ([dim]{iv['source']}[/dim]) · "
-            f"EM 1σ ±{info['expected_move']:,.0f} pts · q={info['dividend_yield']:.1%}"
+            f"\n[bold]{index}[/bold] — [cyan]{info['ticker']}[/cyan] · vence {info['expiry']} "
+            f"{info['expiry_time_cet']} CET · [yellow]{info['dte_days']:.2f} días[/yellow] · "
+            f"EM ±{info['expected_move']:,.0f} pts".replace(",", ".")
         )
+        console.print(
+            f"  spot {market['spot']['value']:,.1f} ({market['spot']['source']}) · "
+            f"IV ATM {iv['value'] * 100:.1f}% ({iv['source']}) · "
+            f"RV {regime['realized_vol_pct']:.1f}% ({regime['source']}) · q={info['dividend_yield']:.1%}".replace(",", ".")
+        )
+        color = {"comprar": "green", "vender": "yellow", "neutral": "white"}[regime["bias"]]
+        console.print(f"  [dim]sesgo:[/dim] [{color}]{regime['bias']}[/{color}] [dim]{regime['why']}[/dim]")
 
         rows = payload["candidates"].get(index, [])
         if not rows:
             rejected = payload["rejected"].get(index, {})
-            console.print(
-                f"  [yellow]Ninguna estructura supera los filtros[/yellow] "
-                f"({rejected.get('count', 0)} rechazadas)"
-            )
+            console.print(f"  [yellow]Ninguna estructura supera los filtros[/yellow] ({rejected.get('count', 0)} rechazadas)")
             for item in rejected.get("top_reasons", []):
                 console.print(f"    [dim]{item['count']}× {item['reason']}[/dim]")
             continue
 
-        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
-        table.add_column("Estructura", justify="left", no_wrap=True)
-        for col in ("Ancho", "Crédito", "Máx L", "POP", "EV", "ROC", "BE", "Score"):
-            table.add_column(col, justify="right", no_wrap=True)
-
-        short_kind = {"bull_put": "BP", "bear_call": "BC", "iron_condor": "IC"}
-        for row in rows:
-            legs = row["legs"]
-            width = row.get("width_pts") or 0
-            if row["kind"] == "iron_condor":
-                strikes = f"{legs[0]['strike']:.0f}/{legs[2]['strike']:.0f}"
-            else:
-                strikes = f"{legs[0]['strike']:.0f}/{legs[1]['strike']:.0f}"
-            table.add_row(
-                f"{short_kind.get(row['kind'], '?')} {strikes}",
-                f"{width:.0f}",
-                f"{row['credit_pts']:.0f}p/{row['credit_eur']:.0f}€",
-                f"[red]{row['max_loss_eur']:.0f}€[/red]",
-                f"{row['pop']:.0%}",
-                f"{row['ev_eur']:+.0f}€",
-                f"{row['roc']:.1%}",
-                "/".join(f"{b:.0f}" for b in row["breakevens"]),
-                f"{row['score']:.2f}",
+        for direction, kinds, titulo, estilo in (
+            ("credit", CREDIT_KINDS, "crédito — cobras prima", "yellow"),
+            ("debit", DEBIT_KINDS, "débito — pagas prima", "green"),
+        ):
+            subset = [r for r in rows if r["direction"] == direction]
+            if not subset:
+                continue
+            table = Table(
+                title=f"{titulo}",
+                title_justify="left",
+                title_style=f"bold {estilo}",
+                show_header=True,
+                header_style="bold",
+                box=None,
+                pad_edge=False,
+                padding=(0, 2),
             )
-        console.print(table)
+            table.add_column("Estructura", justify="left", no_wrap=True)
+            table.add_column("Prima", justify="right", no_wrap=True)
+            table.add_column("Máx. P", justify="right", no_wrap=True)
+            table.add_column("Máx. L", justify="right", no_wrap=True)
+            table.add_column("POP", justify="right", no_wrap=True)
+            table.add_column("EV", justify="right", no_wrap=True)
+            table.add_column("ROC", justify="right", no_wrap=True)
+            table.add_column("Breakeven", justify="right", no_wrap=True)
+
+            last_kind = None
+            for row in subset:
+                if last_kind is not None and row["kind"] != last_kind:
+                    table.add_section()
+                last_kind = row["kind"]
+                legs = row["legs"]
+                if row["kind"] in ("straddle", "strangle"):
+                    strikes = "/".join(f"{leg['strike']:.0f}" for leg in legs)
+                elif row["kind"] == "iron_condor":
+                    strikes = "/".join(f"{leg['strike']:.0f}" for leg in legs if leg["side"] == "sell")
+                else:
+                    strikes = f"{legs[0]['strike']:.0f}/{legs[1]['strike']:.0f}"
+                ancho = row["width_pts"]
+                etiqueta = f"{_ETIQUETA.get(row['kind'], row['kind'])} {strikes}"
+                if ancho:
+                    etiqueta += f" ·{ancho:.0f}"
+                table.add_row(
+                    etiqueta,
+                    _fmt_eur(row["premium_eur"], signo=True),
+                    _fmt_eur(row["max_profit_eur"]),
+                    _fmt_eur(row["max_loss_eur"]),
+                    f"{row['pop']:.0%}",
+                    _fmt_eur(row["ev_eur"], signo=True),
+                    "—" if row["roc"] is None else f"{row['roc']:.0%}",
+                    "/".join(f"{b:.0f}" for b in row["breakevens"]),
+                )
+            console.print(table)
         console.print(
-            f"[dim]POP y EV con σ realizada {rows[0]['sigma_realized_pct']:.1f}% "
-            f"(implícita {rows[0]['atm_iv_pct']:.1f}%). BP=bull put, BC=bear call, IC=iron condor.[/dim]"
+            "[dim]BP bull put · BC bear call · IC iron condor · BCd/BPd bull call y bear put de débito · "
+            "STD straddle · STR strangle. Ordenado por EV/riesgo; 2 mejores de cada clase.[/dim]"
         )
         for row in rows:
             for warning in row["warnings"]:
@@ -244,15 +335,16 @@ def render(payload: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Estructuras de crédito ODAX / OESX (Eurex)")
+    parser = argparse.ArgumentParser(description="Estructuras ODAX / OESX (Eurex)")
     parser.add_argument("--index", default="DAX,STOXX", help="DAX, STOXX o ambos separados por coma")
     parser.add_argument("--expiry", default="semanal", choices=sorted(EXPIRY_MAP), help="vencimiento objetivo")
     parser.add_argument("--spot", action="append", metavar="IDX=PRECIO", help="precio de contado manual")
+    parser.add_argument("--iv", action="append", metavar="IDX=IV", help="IV ATM del bróker (25.6 o 0.256)")
     parser.add_argument(
-        "--iv",
+        "--rv",
         action="append",
-        metavar="IDX=IV",
-        help="IV ATM del bróker; admite 25.6 o 0.256 (del vencimiento elegido)",
+        metavar="IDX=RV",
+        help="vol realizada esperada (25.6 o 0.256). Si no se da, se usa IV×0.90",
     )
     parser.add_argument("--no-llm", action="store_true", help="solo tabla determinista")
     parser.add_argument("--json", action="store_true", help="salida JSON completa")
@@ -277,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
             expiry_type=args.expiry,
             spot_overrides=_parse_pairs(args.spot),
             iv_overrides=_parse_pairs(args.iv, percent=True),
+            rv_overrides=_parse_pairs(args.rv, percent=True),
             use_llm=not args.no_llm,
             config=cfg,
         )

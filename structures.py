@@ -1,23 +1,21 @@
-"""Construcción y evaluación determinista de estructuras de crédito.
+"""Construcción y evaluación determinista de estructuras sobre ODAX / OESX.
+
+Estructuras soportadas:
+  crédito: bull put, bear call, iron condor
+  débito : bull call, bear put, long straddle, long strangle
 
 Nada de esto llama a un LLM: primas, POP, EV, ROC y escenarios se calculan aquí
 y se pueden testear. El LLM (opcional) solo redacta sobre el resultado.
 
-Sobre el EV: con la probabilidad *risk-neutral* (=1−|Δ|) el valor esperado de
-cualquier spread correctamente valorado es ≈0 por construcción, así que un
-filtro "EV>0" con esa probabilidad rechazaría todo. Por eso se calculan dos
-probabilidades:
-
-  * `pop_rn`  = 1 − |Δ pata corta|  → la probabilidad que descuenta el mercado.
-  * `pop`     = P(beneficio a vencimiento) bajo una **vol realizada** asumida
-                (σ_rw = σ_ATM · realized_vol_factor, por defecto −10%).
-
-El EV (`ev_pts`) integra el payoff completo sobre esa distribución lognormal con
-deriva de forward (r−q), es decir: **solo se asume una hipótesis de volatilidad,
-nunca una dirección del índice**. Con realized_vol_factor=1.0 el EV vuelve a ≈0.
+Sobre la dirección: quién gana (vender o comprar prima) lo decide el EV, y el EV
+depende de una única hipótesis: la volatilidad que se espera realizar. Si la vol
+realizada estimada es menor que la implícita, vender prima tiene EV positivo y
+comprar lo tiene negativo; si es mayor, al revés. Nunca se asume dirección del
+índice: la distribución a vencimiento usa deriva de forward (r−q).
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -70,7 +68,8 @@ class Leg:
 @dataclass
 class Spread:
     name: str
-    kind: str                      # bull_put | bear_call | iron_condor
+    kind: str            # bull_put | bear_call | iron_condor | bull_call | bear_put | straddle | strangle
+    direction: str       # "credit" | "debit"
     index: str
     contract: Contract
     legs: list[Leg]
@@ -80,12 +79,12 @@ class Spread:
     dte_days: float
     expected_move: float
     multiplier: float
-    credit: float                  # puntos
-    width: float | None            # puntos
-    max_profit: float              # puntos
+    premium: float                 # prima neta en puntos: >0 cobras, <0 pagas
+    width: float | None            # puntos (None en estructuras abiertas)
+    max_profit: float | None       # puntos (None = ilimitado)
     max_loss: float                # puntos
     breakevens: list[float]
-    pop_rn: float                  # 1 - |Δ| de la pata corta (implícita)
+    pop_rn: float | None           # 1 - Σ|Δ cortas| (None si no hay patas vendidas)
     pop: float                     # P(beneficio) con vol realizada
     p_touch: float                 # aprox. P(tocar la pata corta antes de vencer)
     ev: float                      # puntos esperados por contrato (real-world)
@@ -96,25 +95,37 @@ class Spread:
 
     # ------------------------------------------------------------------ #
     @property
-    def max_profit_eur(self) -> float:
-        return self.max_profit * self.multiplier
+    def is_credit(self) -> bool:
+        return self.direction == "credit"
+
+    @property
+    def credit(self) -> float:
+        """Lo que cobras (0 en las de débito)."""
+        return max(self.premium, 0.0)
+
+    @property
+    def debit(self) -> float:
+        """Lo que pagas (0 en las de crédito)."""
+        return max(-self.premium, 0.0)
+
+    @property
+    def max_profit_eur(self) -> float | None:
+        return None if self.max_profit is None else self.max_profit * self.multiplier
 
     @property
     def max_loss_eur(self) -> float:
         return self.max_loss * self.multiplier
 
     @property
-    def credit_eur(self) -> float:
-        return self.credit * self.multiplier
+    def premium_eur(self) -> float:
+        return self.premium * self.multiplier
 
     @property
-    def roc(self) -> float:
-        """Crédito / riesgo máximo del spread (no sobre margen PRMS de Eurex)."""
-        return self.credit / self.max_loss if self.max_loss > 0 else 0.0
-
-    @property
-    def roc_margin(self) -> float:
-        return self.credit / self.margin_estimate if self.margin_estimate > 0 else 0.0
+    def roc(self) -> float | None:
+        """Beneficio máximo / riesgo máximo. None si el beneficio es ilimitado."""
+        if self.max_profit is None or self.max_loss <= 0:
+            return None
+        return self.max_profit / self.max_loss
 
     @property
     def accepted(self) -> bool:
@@ -145,6 +156,7 @@ class Spread:
             "id": self.id,
             "name": self.name,
             "kind": self.kind,
+            "direction": self.direction,
             "index": self.index,
             "contract": self.contract.ticker,
             "expiry": self.contract.expiry.isoformat(),
@@ -154,19 +166,18 @@ class Spread:
             "sigma_realized_pct": round(self.sigma_realized * 100, 2),
             "expected_move": round(self.expected_move, 1),
             "legs": [leg.to_dict() for leg in self.legs],
-            "credit_pts": round(self.credit, 2),
-            "credit_eur": round(self.credit_eur, 2),
+            "premium_pts": round(self.premium, 2),
+            "premium_eur": round(self.premium_eur, 2),
             "width_pts": round(self.width, 1) if self.width is not None else None,
-            "max_profit_eur": round(self.max_profit_eur, 2),
+            "max_profit_eur": None if self.max_profit_eur is None else round(self.max_profit_eur, 2),
             "max_loss_eur": round(self.max_loss_eur, 2),
             "breakevens": [round(b, 1) for b in self.breakevens],
-            "pop_rn": round(self.pop_rn, 4),
+            "pop_rn": None if self.pop_rn is None else round(self.pop_rn, 4),
             "pop": round(self.pop, 4),
             "p_touch": round(self.p_touch, 4),
             "ev_pts": round(self.ev, 2),
             "ev_eur": round(self.ev * self.multiplier, 2),
-            "roc": round(self.roc, 4),
-            "roc_margin": round(self.roc_margin, 4),
+            "roc": None if self.roc is None else round(self.roc, 4),
             "margin_estimate_eur": round(self.margin_estimate * self.multiplier, 2),
             "score": round(self.score, 4),
             "scenarios": self.scenarios(),
@@ -183,7 +194,7 @@ def _distribution(spot: float, T: float, r: float, q: float, sigma: float, point
     """Rejilla de precios a vencimiento y sus pesos (densidad lognormal en z)."""
     z = np.linspace(-z_max, z_max, points)
     weights = np.exp(-0.5 * z * z) / np.sqrt(2 * np.pi)
-    weights = weights / weights.sum()          # normaliza la integral discreta
+    weights = weights / weights.sum()
     spots = spot * np.exp((r - q - 0.5 * sigma * sigma) * T + sigma * np.sqrt(T) * z)
     return spots, weights
 
@@ -210,9 +221,7 @@ def market_metrics(
             else np.maximum(leg.strike - spots, 0.0)
         )
         pnl += leg.sign * (leg.price - intrinsic)
-    ev = float((pnl * weights).sum())
-    pop = float(((pnl > 0) * weights).sum())
-    return ev, pop
+    return float((pnl * weights).sum()), float(((pnl > 0) * weights).sum())
 
 
 # --------------------------------------------------------------------------- #
@@ -223,14 +232,24 @@ class CandidateConfig:
     put_deltas: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.30)
     call_deltas: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.30)
     width_ticks: tuple[int, ...] = (2, 3, 4, 6, 8)
-    realized_vol_factor: float = 0.90     # σ realizada asumida = σ implícita × este factor
-    min_pop: float = 0.70
-    min_roc: float = 0.10
+    debit_deltas: tuple[float, ...] = (0.25, 0.35, 0.45)
+    strangle_deltas: tuple[float, ...] = (0.15, 0.20, 0.25)
+    realized_vol_factor: float = float(os.getenv("REALIZED_VOL_FACTOR", "0.90"))
+    min_pop: float = 0.70                 # solo para estructuras de crédito
+    min_roc: float = 0.10                 # cuando el beneficio es finito
     min_credit_pts: float = 1.0
     min_ev_pts: float = 0.0
+    max_debit_frac: float = 0.02          # débito máximo como fracción del spot
     include_iron_condors: bool = True
-    max_candidates: int = 12
-    per_kind: int = 4            # huecos reservados por tipo de estructura
+    include_debits: bool = True
+    include_vol_structures: bool = True   # straddle y strangle
+    max_candidates: int = 14
+    per_kind: int = 2                     # las 2 mejores de cada clase
+
+
+CREDIT_KINDS = ("bull_put", "bear_call", "iron_condor")
+DEBIT_KINDS = ("bull_call", "bear_put", "straddle", "strangle")
+ALL_KINDS = CREDIT_KINDS + DEBIT_KINDS
 
 
 # --------------------------------------------------------------------------- #
@@ -256,23 +275,29 @@ def _finalize(spread: Spread, cfg: CandidateConfig) -> Spread:
     """Calcula score y filtros dejando constancia del motivo de cada rechazo."""
     if spread.max_loss <= 0:
         spread.rejections.append("max_loss no positivo")
-    if spread.credit <= 0:
-        spread.rejections.append("crédito no positivo")
-    if spread.credit < cfg.min_credit_pts:
-        spread.rejections.append(f"crédito {spread.credit:.1f} pts < mínimo {cfg.min_credit_pts}")
-    if spread.pop < cfg.min_pop:
-        spread.rejections.append(f"POP {spread.pop:.0%} < mínimo {cfg.min_pop:.0%}")
-    if spread.roc < cfg.min_roc:
+    if spread.premium == 0:
+        spread.rejections.append("prima nula")
+    if spread.is_credit:
+        if spread.credit < cfg.min_credit_pts:
+            spread.rejections.append(f"crédito {spread.credit:.1f} pts < mínimo {cfg.min_credit_pts}")
+        if spread.pop < cfg.min_pop:
+            spread.rejections.append(f"POP {spread.pop:.0%} < mínimo {cfg.min_pop:.0%}")
+    else:
+        limite = cfg.max_debit_frac * spread.spot
+        if spread.debit > limite:
+            spread.rejections.append(f"débito {spread.debit:.0f} pts > máximo {limite:.0f}")
+    if spread.roc is not None and spread.roc < cfg.min_roc:
         spread.rejections.append(f"ROC {spread.roc:.1%} < mínimo {cfg.min_roc:.0%}")
     if spread.ev < cfg.min_ev_pts:
         spread.rejections.append(f"EV {spread.ev:.2f} pts < mínimo {cfg.min_ev_pts}")
-    if spread.max_loss > 0:
-        spread.score = spread.ev / spread.max_loss
+    spread.score = spread.ev / spread.max_loss if spread.max_loss > 0 else 0.0
     # avisos: informan, no bloquean
-    if spread.pop > 0.92:
+    if spread.is_credit and spread.pop > 0.92:
         spread.warnings.append("POP muy alto: el crédito es escaso para el riesgo asumido")
-    if spread.width and spread.credit < 0.05 * spread.width:
+    if spread.width and spread.is_credit and spread.credit < 0.05 * spread.width:
         spread.warnings.append("crédito < 5% del ancho: la horquilla se come la operación")
+    if spread.max_profit is None:
+        spread.warnings.append("beneficio ilimitado: ROC no comparable con verticales")
     return spread
 
 
@@ -288,21 +313,30 @@ def _build(
     dte_days: float,
     expected_move: float,
     legs: list[Leg],
-    width: float,
+    width: float | None,
     breakevens: list[float],
     cfg: CandidateConfig,
+    sigma_realized: float | None = None,
 ) -> Spread:
     spec = SPECS[index]
     T = max(dte_days, 0.0) / 365.0
-    credit = sum(leg.sign * leg.price for leg in legs)
-    max_loss = max(width - credit, 0.0)
-    sigma_rw = surface.atm * cfg.realized_vol_factor
+    premium = sum(leg.sign * leg.price for leg in legs)
+    direction = "credit" if premium >= 0 else "debit"
+    sigma_rw = sigma_realized or surface.atm * cfg.realized_vol_factor
     ev, pop = market_metrics(legs, spot, T, r, spec.q, sigma_rw)
-    # suma de |delta| de las patas cortas: en un vertical es |Δ|; en un cóndor, |Δp|+|Δc|
+
+    if direction == "credit":
+        max_profit: float | None = premium
+        max_loss = max((width or 0.0) - premium, 0.0)
+    else:
+        max_loss = -premium
+        max_profit = None if width is None else max(width - max_loss, 0.0)
+
     short_delta = sum(abs(leg.delta) for leg in legs if leg.side == "sell")
     spread = Spread(
         name=name,
         kind=kind,
+        direction=direction,
         index=index,
         contract=contract,
         legs=legs,
@@ -312,12 +346,12 @@ def _build(
         dte_days=dte_days,
         expected_move=expected_move,
         multiplier=spec.multiplier,
-        credit=credit,
+        premium=premium,
         width=width,
-        max_profit=credit,
+        max_profit=max_profit,
         max_loss=max_loss,
         breakevens=breakevens,
-        pop_rn=float(np.clip(1.0 - short_delta, 0.0, 1.0)),
+        pop_rn=float(np.clip(1.0 - short_delta, 0.0, 1.0)) if short_delta > 0 else None,
         pop=pop,
         p_touch=float(np.clip(2 * short_delta, 0.0, 0.99)),
         ev=ev,
@@ -327,21 +361,10 @@ def _build(
     return _finalize(spread, cfg)
 
 
-def bull_put_spread(
-    index: str,
-    contract: Contract,
-    spot: float,
-    surface: VolSurface,
-    r: float,
-    short_delta: float,
-    width_ticks: int,
-    cfg: CandidateConfig,
-    dte_days: float,
-    expected_move: float,
-) -> Spread:
+# ---------------------------- estructuras de crédito ----------------------- #
+def bull_put_spread(index, contract, spot, surface, r, short_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized=None):
     spec = SPECS[index]
-    tick = spec.strike_interval
-    T = dte_days / 365.0
+    tick, T = spec.strike_interval, dte_days / 365.0
     k_short = strike_for_delta(spot, T, surface, "put", short_delta, r, spec.q, tick)
     k_long = k_short - width_ticks * tick
     legs = [
@@ -350,37 +373,16 @@ def bull_put_spread(
     ]
     credit = legs[0].price - legs[1].price
     return _build(
-        name=f"Bull Put {k_short:.0f}/{k_long:.0f}",
-        kind="bull_put",
-        index=index,
-        contract=contract,
-        spot=spot,
-        surface=surface,
-        r=r,
-        dte_days=dte_days,
-        expected_move=expected_move,
-        legs=legs,
-        width=k_short - k_long,
-        breakevens=[k_short - credit],
-        cfg=cfg,
+        name=f"Bull Put {k_short:.0f}/{k_long:.0f}", kind="bull_put", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=k_short - k_long,
+        breakevens=[k_short - credit], cfg=cfg, sigma_realized=sigma_realized,
     )
 
 
-def bear_call_spread(
-    index: str,
-    contract: Contract,
-    spot: float,
-    surface: VolSurface,
-    r: float,
-    short_delta: float,
-    width_ticks: int,
-    cfg: CandidateConfig,
-    dte_days: float,
-    expected_move: float,
-) -> Spread:
+def bear_call_spread(index, contract, spot, surface, r, short_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized=None):
     spec = SPECS[index]
-    tick = spec.strike_interval
-    T = dte_days / 365.0
+    tick, T = spec.strike_interval, dte_days / 365.0
     k_short = strike_for_delta(spot, T, surface, "call", short_delta, r, spec.q, tick)
     k_long = k_short + width_ticks * tick
     legs = [
@@ -389,57 +391,105 @@ def bear_call_spread(
     ]
     credit = legs[0].price - legs[1].price
     return _build(
-        name=f"Bear Call {k_short:.0f}/{k_long:.0f}",
-        kind="bear_call",
-        index=index,
-        contract=contract,
-        spot=spot,
-        surface=surface,
-        r=r,
-        dte_days=dte_days,
-        expected_move=expected_move,
-        legs=legs,
-        width=k_long - k_short,
-        breakevens=[k_short + credit],
-        cfg=cfg,
+        name=f"Bear Call {k_short:.0f}/{k_long:.0f}", kind="bear_call", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=k_long - k_short,
+        breakevens=[k_short + credit], cfg=cfg, sigma_realized=sigma_realized,
     )
 
 
-def iron_condor(
-    index: str,
-    contract: Contract,
-    spot: float,
-    surface: VolSurface,
-    r: float,
-    put_delta: float,
-    call_delta: float,
-    width_ticks: int,
-    cfg: CandidateConfig,
-    dte_days: float,
-    expected_move: float,
-) -> Spread:
-    put = bull_put_spread(index, contract, spot, surface, r, put_delta, width_ticks, cfg, dte_days, expected_move)
-    call = bear_call_spread(index, contract, spot, surface, r, call_delta, width_ticks, cfg, dte_days, expected_move)
-    credit = put.credit + call.credit
+def iron_condor(index, contract, spot, surface, r, put_delta, call_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized=None):
+    put = bull_put_spread(index, contract, spot, surface, r, put_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized)
+    call = bear_call_spread(index, contract, spot, surface, r, call_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized)
     put_width = put.width or 0.0
     call_width = call.width or 0.0
     return _build(
-        name=f"Iron Condor {put.legs[0].strike:.0f}/{call.legs[0].strike:.0f}",
-        kind="iron_condor",
-        index=index,
-        contract=contract,
-        spot=spot,
-        surface=surface,
-        r=r,
-        dte_days=dte_days,
-        expected_move=expected_move,
-        legs=put.legs + call.legs,
-        width=max(put_width, call_width),
-        breakevens=[put.breakevens[0], call.breakevens[0]],
-        cfg=cfg,
+        name=f"Iron Condor {put.legs[0].strike:.0f}/{call.legs[0].strike:.0f}", kind="iron_condor",
+        index=index, contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=put.legs + call.legs, width=max(put_width, call_width),
+        breakevens=[put.breakevens[0], call.breakevens[0]], cfg=cfg, sigma_realized=sigma_realized,
     )
 
 
+# ---------------------------- estructuras de débito ------------------------ #
+def bull_call_spread(index, contract, spot, surface, r, short_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized=None):
+    """Débito: compra el call bajo y vende el call alto."""
+    spec = SPECS[index]
+    tick, T = spec.strike_interval, dte_days / 365.0
+    k_short = strike_for_delta(spot, T, surface, "call", short_delta, r, spec.q, tick)
+    k_long = k_short - width_ticks * tick
+    legs = [
+        _leg(spot, k_long, T, surface, r, spec.q, "call", "buy"),
+        _leg(spot, k_short, T, surface, r, spec.q, "call", "sell"),
+    ]
+    debit = legs[0].price - legs[1].price
+    return _build(
+        name=f"Bull Call {k_long:.0f}/{k_short:.0f}", kind="bull_call", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=k_short - k_long,
+        breakevens=[k_long + debit], cfg=cfg, sigma_realized=sigma_realized,
+    )
+
+
+def bear_put_spread(index, contract, spot, surface, r, short_delta, width_ticks, cfg, dte_days, expected_move, sigma_realized=None):
+    """Débito: compra el put alto y vende el put bajo."""
+    spec = SPECS[index]
+    tick, T = spec.strike_interval, dte_days / 365.0
+    k_short = strike_for_delta(spot, T, surface, "put", short_delta, r, spec.q, tick)
+    k_long = k_short + width_ticks * tick
+    legs = [
+        _leg(spot, k_long, T, surface, r, spec.q, "put", "buy"),
+        _leg(spot, k_short, T, surface, r, spec.q, "put", "sell"),
+    ]
+    debit = legs[0].price - legs[1].price
+    return _build(
+        name=f"Bear Put {k_long:.0f}/{k_short:.0f}", kind="bear_put", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=k_long - k_short,
+        breakevens=[k_long - debit], cfg=cfg, sigma_realized=sigma_realized,
+    )
+
+
+def long_straddle(index, contract, spot, surface, r, cfg, dte_days, expected_move, sigma_realized=None):
+    """Débito: compra call y put en el strike más cercano al dinero."""
+    spec = SPECS[index]
+    tick, T = spec.strike_interval, dte_days / 365.0
+    k = round(spot / tick) * tick
+    legs = [
+        _leg(spot, k, T, surface, r, spec.q, "call", "buy"),
+        _leg(spot, k, T, surface, r, spec.q, "put", "buy"),
+    ]
+    debit = legs[0].price + legs[1].price
+    return _build(
+        name=f"Straddle {k:.0f}", kind="straddle", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=None,
+        breakevens=[k - debit, k + debit], cfg=cfg, sigma_realized=sigma_realized,
+    )
+
+
+def long_strangle(index, contract, spot, surface, r, delta, cfg, dte_days, expected_move, sigma_realized=None):
+    """Débito: compra put y call OTM a la misma distancia en delta."""
+    spec = SPECS[index]
+    tick, T = spec.strike_interval, dte_days / 365.0
+    k_put = strike_for_delta(spot, T, surface, "put", delta, r, spec.q, tick)
+    k_call = strike_for_delta(spot, T, surface, "call", delta, r, spec.q, tick)
+    legs = [
+        _leg(spot, k_put, T, surface, r, spec.q, "put", "buy"),
+        _leg(spot, k_call, T, surface, r, spec.q, "call", "buy"),
+    ]
+    debit = legs[0].price + legs[1].price
+    return _build(
+        name=f"Strangle {k_put:.0f}/{k_call:.0f}", kind="strangle", index=index,
+        contract=contract, spot=spot, surface=surface, r=r, dte_days=dte_days,
+        expected_move=expected_move, legs=legs, width=None,
+        breakevens=[k_put - debit, k_call + debit], cfg=cfg, sigma_realized=sigma_realized,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Universo y ranking
+# --------------------------------------------------------------------------- #
 def build_candidates(
     index: str,
     contract: Contract,
@@ -447,49 +497,60 @@ def build_candidates(
     surface: VolSurface,
     r: float,
     cfg: CandidateConfig | None = None,
+    sigma_realized: float | None = None,
 ) -> list[Spread]:
     """Universo de estructuras: aceptadas y rechazadas (con el motivo del rechazo)."""
     cfg = cfg or CandidateConfig()
     dte_days = contract.days_to_expiry()
     T = max(dte_days, 0.0) / 365.0
-    expected_move = spot * surface.atm * float(np.sqrt(T)) if T > 0 else 0.0
+    em = spot * surface.atm * float(np.sqrt(T)) if T > 0 else 0.0
+    kw = dict(index=index, contract=contract, spot=spot, surface=surface, r=r,
+              cfg=cfg, dte_days=dte_days, expected_move=em, sigma_realized=sigma_realized)
     out: list[Spread] = []
     for d in cfg.put_deltas:
         for w in cfg.width_ticks:
-            out.append(bull_put_spread(index, contract, spot, surface, r, d, w, cfg, dte_days, expected_move))
+            out.append(bull_put_spread(short_delta=d, width_ticks=w, **kw))
     for d in cfg.call_deltas:
         for w in cfg.width_ticks:
-            out.append(bear_call_spread(index, contract, spot, surface, r, d, w, cfg, dte_days, expected_move))
+            out.append(bear_call_spread(short_delta=d, width_ticks=w, **kw))
     if cfg.include_iron_condors:
         for dp in cfg.put_deltas:
             for dc in cfg.call_deltas:
                 for w in cfg.width_ticks:
-                    out.append(
-                        iron_condor(index, contract, spot, surface, r, dp, dc, w, cfg, dte_days, expected_move)
-                    )
+                    out.append(iron_condor(put_delta=dp, call_delta=dc, width_ticks=w, **kw))
+    if cfg.include_debits:
+        for d in cfg.debit_deltas:
+            for w in cfg.width_ticks:
+                out.append(bull_call_spread(short_delta=d, width_ticks=w, **kw))
+                out.append(bear_put_spread(short_delta=d, width_ticks=w, **kw))
+        if cfg.include_vol_structures:
+            out.append(long_straddle(**kw))
+            for d in cfg.strangle_deltas:
+                out.append(long_strangle(delta=d, **kw))
     return out
 
 
 def rank(candidates: list[Spread], cfg: CandidateConfig | None = None, include_rejected: bool = False) -> list[Spread]:
-    """Ordena por score con representación equilibrada por tipo.
+    """Las `per_kind` mejores de cada clase, ordenadas por score (EV / riesgo).
 
-    Ordenar solo por EV/riesgo entierra los verticales: un iron condor del mismo
-    ancho cobra ~el doble de prima con el mismo max loss, así que siempre gana el
-    cociente. Se reservan `per_kind` huecos por tipo (4 bull puts, 4 bear calls,
-    4 iron condors por defecto) y luego los huecos sobrantes se rellenan por
-    score global. Dentro de la tabla se sigue ordenando por score.
+    Ordenar por EV/riesgo sin cuota por tipo entierra clases enteras: un iron
+    condor del mismo ancho cobra ~el doble de prima con el mismo max loss y
+    siempre gana el cociente. Se reservan `per_kind` huecos por clase y los
+    sobrantes se rellenan por score global.
     """
     cfg = cfg or CandidateConfig()
     accepted = sorted([c for c in candidates if c.accepted], key=lambda c: c.score, reverse=True)
+    kinds_present = {c.kind for c in accepted}
+    target = min(cfg.max_candidates, cfg.per_kind * len(kinds_present))
     picked: list[Spread] = []
     seen: set[int] = set()
-    for kind in ("bull_put", "bear_call", "iron_condor"):
+    for kind in ALL_KINDS:
         for spread in [c for c in accepted if c.kind == kind][: cfg.per_kind]:
             picked.append(spread)
             seen.add(id(spread))
-    if len(picked) < cfg.max_candidates:      # rellenar si algún tipo no tiene 4 válidos
+    if len(picked) < target:          # solo si alguna clase no tenía `per_kind` válidas
         for spread in accepted:
-            if len(picked) >= cfg.max_candidates:
+            if len(picked) >= target:
                 break
             if id(spread) not in seen:
                 picked.append(spread)

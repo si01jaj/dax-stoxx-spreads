@@ -10,11 +10,11 @@
 <div class="container">
     <header>
         <h1>Eurex · ODAX / OESX</h1>
-        <p>Estructuras de crédito sobre DAX 40 y EURO STOXX 50, calculadas en Python</p>
+        <p>Estructuras de crédito y débito sobre DAX 40 y EURO STOXX 50, calculadas en Python</p>
     </header>
 
-    <section class="card" id="form">
-        <div class="grid">
+    <section class="card">
+        <div class="grid top">
             <div class="field">
                 <label>Índices</label>
                 <div class="checks">
@@ -41,16 +41,21 @@
             </div>
         </div>
 
-        <div class="grid" id="quotes">
+        <div class="grid">
             <div class="field">
                 <label>DAX — precio</label>
                 <input type="text" id="dax-price" placeholder="cargando…" inputmode="decimal">
                 <span class="hint" id="dax-price-hint"></span>
             </div>
             <div class="field">
-                <label>DAX — IV ATM % (del vencimiento)</label>
+                <label>DAX — IV ATM % <em>(del vencimiento)</em></label>
                 <input type="text" id="dax-iv" placeholder="p.ej. 25.6" inputmode="decimal">
                 <span class="hint" id="dax-iv-hint"></span>
+            </div>
+            <div class="field">
+                <label>DAX — vol realizada % <em>(opcional)</em></label>
+                <input type="text" id="dax-rv" placeholder="p.ej. 28" inputmode="decimal">
+                <span class="hint">si la dejas vacía se asume IV × 0,90</span>
             </div>
             <div class="field">
                 <label>STOXX — precio</label>
@@ -58,9 +63,14 @@
                 <span class="hint" id="stoxx-price-hint"></span>
             </div>
             <div class="field">
-                <label>STOXX — IV ATM % (del vencimiento)</label>
+                <label>STOXX — IV ATM % <em>(del vencimiento)</em></label>
                 <input type="text" id="stoxx-iv" placeholder="p.ej. 22.0" inputmode="decimal">
                 <span class="hint" id="stoxx-iv-hint"></span>
+            </div>
+            <div class="field">
+                <label>STOXX — vol realizada % <em>(opcional)</em></label>
+                <input type="text" id="stoxx-rv" placeholder="p.ej. 20" inputmode="decimal">
+                <span class="hint">si la dejas vacía se asume IV × 0,90</span>
             </div>
         </div>
 
@@ -92,15 +102,24 @@
 
     <footer>
         Herramienta de análisis, no asesoramiento financiero. Cifras teóricas sin comisiones,
-        horquilla ni margen PRMS. Los datos de precio e IV se introducen a mano desde el bróker:
-        no hay feed de opciones conectado, así que la calidad del resultado depende de esos dos datos.
-        La IV debe ser la del vencimiento seleccionado.
+        horquilla ni margen PRMS. Precio e IV se introducen a mano desde el bróker; la calidad del
+        resultado depende de esos datos. La IV (y la vol realizada, si la aportas) debe ser la del
+        vencimiento seleccionado.
     </footer>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const sessionId = Math.random().toString(36).slice(2, 10);
+
+const ETIQUETA = {
+    bull_put: 'BP', bear_call: 'BC', iron_condor: 'IC',
+    bull_call: 'BCd', bear_put: 'BPd', straddle: 'STD', strangle: 'STR',
+};
+const NOMBRE = {
+    bull_put: 'Bull put', bear_call: 'Bear call', iron_condor: 'Iron condor',
+    bull_call: 'Bull call', bear_put: 'Bear put', straddle: 'Straddle', strangle: 'Strangle',
+};
 
 function tokenHeaders() {
     const t = $('token').value.trim();
@@ -113,9 +132,14 @@ function num(v) {
     return Number.isFinite(n) ? n : null;
 }
 
-function fmt(n, d = 0) {
-    return n === null || n === undefined ? '—'
-        : Number(n).toLocaleString('es-ES', {minimumFractionDigits: d, maximumFractionDigits: d});
+function pct(v, d = 1) {
+    return v === null || v === undefined ? '—' : (v * 100).toFixed(d) + '%';
+}
+
+function eur(n, d = 0, signo = false) {
+    if (n === null || n === undefined) return '∞';
+    const pref = signo && n > 0 ? '+' : '';
+    return pref + Number(n).toLocaleString('es-ES', {minimumFractionDigits: d, maximumFractionDigits: d}) + ' €';
 }
 
 function el(tag, text, cls) {
@@ -140,9 +164,7 @@ async function loadDefaults() {
             $(id + '-price').value = spot !== null ? spot.toFixed(1) : '';
             $(id + '-price-hint').textContent = market.spot.source;
             $(id + '-iv').value = iv !== null ? (iv * 100).toFixed(1) : '';
-            $(id + '-iv-hint').textContent = iv === null
-                ? 'manual: cópiala del bróker'
-                : market.atm_iv.source;
+            $(id + '-iv-hint').textContent = iv === null ? 'manual: cópiala del bróker' : market.atm_iv.source;
         }
         const c = (data.contracts || {}).DAX || (data.contracts || {}).STOXX;
         $('status').textContent = c
@@ -153,61 +175,64 @@ async function loadDefaults() {
     }
 }
 
-function renderTable(index, rows, contract) {
-    const card = el('section', null, 'card');
-    card.appendChild(el('h2', `${index} · ${contract.ticker}`));
-    card.appendChild(el('p',
-        `vence ${contract.expiry} a las ${contract.expiry_time_cet} CET · ${contract.dte_days.toFixed(2)} días · `
-        + `EM 1σ ±${fmt(contract.expected_move)} pts · q=${(contract.dividend_yield * 100).toFixed(1)}% · `
-        + `multiplicador ${contract.multiplier} €/punto`, 'meta'));
+function tablaDireccion(index, rows, titulo, clase) {
+    const block = el('div', null, 'block');
+    block.appendChild(el('h3', titulo, 'block-title ' + clase));
 
-    if (!rows.length) {
-        card.appendChild(el('p', 'Ninguna estructura supera los filtros con estos datos.', 'warn'));
-        return card;
-    }
-
+    const wrap = el('div', null, 'table-wrap');
     const table = el('table');
     const thead = el('thead');
     const hr = el('tr');
-    for (const h of ['Estructura', 'Ancho', 'Crédito', 'Máx pérdida', 'POP', 'EV', 'ROC', 'Breakeven', 'Score']) {
-        hr.appendChild(el('th', h));
-    }
+    const cols = ['Estructura', 'Prima', 'Máx. beneficio', 'Máx. pérdida', 'POP', 'EV', 'ROC', 'Breakeven'];
+    for (const h of cols) hr.appendChild(el('th', h));
     thead.appendChild(hr);
     table.appendChild(thead);
+
     const tbody = el('tbody');
-    const shortKind = {bull_put: 'BP', bear_call: 'BC', iron_condor: 'IC'};
+    let ultimo = null;
     for (const row of rows) {
+        if (ultimo !== null && row.kind !== ultimo) {
+            const sep = el('tr', null, 'sep');
+            sep.appendChild(el('td', `${NOMBRE[row.kind]}`, 'sep-label')).colSpan = cols.length;
+            tbody.appendChild(sep);
+        }
+        ultimo = row.kind;
+
         const tr = el('tr');
-        const strikes = row.kind === 'iron_condor'
-            ? `${row.legs[0].strike}/${row.legs[2].strike}`
-            : `${row.legs[0].strike}/${row.legs[1].strike}`;
-        tr.appendChild(el('td', `${shortKind[row.kind] || row.kind} ${strikes}`, 'strong'));
-        tr.appendChild(el('td', fmt(row.width_pts)));
-        tr.appendChild(el('td', `${fmt(row.credit_pts)} p · ${fmt(row.credit_eur)} €`));
-        tr.appendChild(el('td', `${fmt(row.max_loss_eur)} €`, 'neg'));
-        tr.appendChild(el('td', `${(row.pop * 100).toFixed(0)}%`));
-        tr.appendChild(el('td', `${row.ev_eur >= 0 ? '+' : ''}${fmt(row.ev_eur)} €`));
-        tr.appendChild(el('td', `${(row.roc * 100).toFixed(1)}%`));
-        tr.appendChild(el('td', row.breakevens.map((b) => fmt(b)).join(' / ')));
-        tr.appendChild(el('td', row.score.toFixed(2)));
-        tr.title = row.legs.map((l) => `${l.side} ${l.kind} ${l.strike} @ ${l.iv_pct}% (${l.price} pts, Δ${l.delta})`).join('\n');
-        tr.addEventListener('click', () => showScenarios(card, row));
+        const trk = row.kind === 'iron_condor'
+            ? row.legs.filter((l) => l.side === 'sell').map((l) => l.strike).join(' / ')
+            : row.kind === 'straddle'
+                ? String(row.legs[0].strike)
+                : row.legs.map((l) => l.strike).join(' / ');
+        const label = el('td', null, 'struct');
+        label.appendChild(el('span', ETIQUETA[row.kind] || row.kind, 'tag ' + clase));
+        label.appendChild(el('span', ' ' + trk, 'strikes'));
+        if (row.width_pts) label.appendChild(el('span', ` · ${row.width_pts.toFixed(0)}`, 'width'));
+        tr.appendChild(label);
+
+        tr.appendChild(el('td', eur(row.premium_eur, 0, true), row.premium_eur >= 0 ? 'pos' : 'neg'));
+        tr.appendChild(el('td', eur(row.max_profit_eur)));
+        tr.appendChild(el('td', eur(row.max_loss_eur), 'strong-neg'));
+        tr.appendChild(el('td', pct(row.pop, 0)));
+        tr.appendChild(el('td', eur(row.ev_eur, 0, true), row.ev_eur >= 0 ? 'pos' : 'neg'));
+        tr.appendChild(el('td', row.roc === null ? '—' : pct(row.roc, 0)));
+        tr.appendChild(el('td', row.breakevens.map((b) => b.toFixed(0)).join(' / '), 'be'));
+
+        tr.title = row.legs.map((l) => `${l.side} ${l.kind} ${l.strike} @ ${l.iv_pct}% · ${l.price} pts · Δ${l.delta}`).join('\n');
+        tr.addEventListener('click', () => showScenarios(block, row));
         tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    card.appendChild(table);
-    card.appendChild(el('p',
-        `POP y EV calculados con σ realizada ${rows[0].sigma_realized_pct}% frente a la implícita `
-        + `${rows[0].atm_iv_pct}%. BP = bull put, BC = bear call, IC = iron condor. `
-        + 'Clic en una fila para ver escenarios a vencimiento.', 'hint'));
-    return card;
+    wrap.appendChild(table);
+    block.appendChild(wrap);
+    return block;
 }
 
-function showScenarios(card, row) {
-    const old = card.querySelector('.scenarios');
+function showScenarios(block, row) {
+    const old = block.querySelector('.scenarios');
     if (old) old.remove();
     const box = el('div', null, 'scenarios');
-    box.appendChild(el('h3', `Escenarios — ${row.name}`));
+    box.appendChild(el('h4', `Escenarios — ${row.name}`));
     const table = el('table');
     const thead = el('thead');
     const hr = el('tr');
@@ -218,14 +243,51 @@ function showScenarios(card, row) {
     for (const [k, v] of Object.entries(row.scenarios)) {
         const tr = el('tr');
         tr.appendChild(el('td', k));
-        tr.appendChild(el('td', fmt(v.spot, 1)));
-        tr.appendChild(el('td', `${v.pnl_pts >= 0 ? '+' : ''}${fmt(v.pnl_pts, 1)}`));
-        tr.appendChild(el('td', `${v.pnl_eur >= 0 ? '+' : ''}${fmt(v.pnl_eur)}`, v.pnl_eur >= 0 ? 'pos' : 'neg'));
+        tr.appendChild(el('td', v.spot.toLocaleString('es-ES', {maximumFractionDigits: 1})));
+        tr.appendChild(el('td', (v.pnl_pts >= 0 ? '+' : '') + v.pnl_pts.toFixed(1)));
+        tr.appendChild(el('td', eur(v.pnl_eur, 0, true), v.pnl_eur >= 0 ? 'pos' : 'neg'));
         tbody.appendChild(tr);
     }
     table.appendChild(tbody);
     box.appendChild(table);
-    card.appendChild(box);
+    block.appendChild(box);
+}
+
+function bloqueIndice(index, data) {
+    const card = el('section', null, 'card');
+    const contract = data.contracts[index];
+    const market = data.markets[index];
+    const regime = market.regime || {};
+
+    const head = el('div', null, 'index-head');
+    head.appendChild(el('h2', `${index} · ${contract.ticker}`));
+    head.appendChild(el('p',
+        `vence ${contract.expiry} a las ${contract.expiry_time_cet} CET · `
+        + `${contract.dte_days.toFixed(2)} días · EM 1σ ±${contract.expected_move.toLocaleString('es-ES')} pts · `
+        + `q=${(contract.dividend_yield * 100).toFixed(1)}% · ${contract.multiplier} €/punto`, 'meta'));
+    card.appendChild(head);
+
+    const chips = el('div', null, 'chips');
+    chips.appendChild(el('span', `spot ${market.spot.value.toLocaleString('es-ES', {maximumFractionDigits: 1})}`, 'chip'));
+    chips.appendChild(el('span', `IV ${pct(market.atm_iv.value)} (${market.atm_iv.source})`, 'chip'));
+    chips.appendChild(el('span', `RV ${regime.realized_vol_pct ?? '—'}% (${regime.source})`, 'chip'));
+    chips.appendChild(el('span', `sesgo: ${regime.bias}`, 'chip ' + (regime.bias === 'comprar' ? 'buy' : regime.bias === 'vender' ? 'sell' : '')));
+    card.appendChild(chips);
+    card.appendChild(el('p', regime.why || '', 'meta'));
+
+    const rows = data.candidates[index] || [];
+    if (!rows.length) {
+        card.appendChild(el('p', 'Ninguna estructura supera los filtros con estos datos.', 'warn'));
+        return card;
+    }
+    const creditos = rows.filter((r) => r.direction === 'credit');
+    const debitos = rows.filter((r) => r.direction === 'debit');
+    if (creditos.length) card.appendChild(tablaDireccion(index, creditos, 'Crédito — cobras prima', 'credit'));
+    if (debitos.length) card.appendChild(tablaDireccion(index, debitos, 'Débito — pagas prima', 'debit'));
+    card.appendChild(el('p',
+        'Clic en una fila para ver escenarios a vencimiento. 2 mejores de cada clase, ordenadas por EV/riesgo.',
+        'hint'));
+    return card;
 }
 
 async function analyze() {
@@ -234,7 +296,6 @@ async function analyze() {
     if ($('idx-stoxx').checked) indices.push('STOXX');
     if (!indices.length) { $('status').textContent = 'elige al menos un índice'; return; }
 
-    // Validación en cliente: la IV es un dato que aporta el usuario, no se inventa.
     const missing = indices.filter((idx) => {
         const field = $(idx === 'DAX' ? 'dax-iv' : 'stoxx-iv').value.trim();
         return field === '' || num(field) === null || num(field) <= 0;
@@ -251,8 +312,10 @@ async function analyze() {
         expiry_type: $('expiry').value,
         dax_price: num($('dax-price').value),
         dax_iv: iv('dax-iv'),
+        dax_rv: iv('dax-rv'),
         stoxx_price: num($('stoxx-price').value),
         stoxx_iv: iv('stoxx-iv'),
+        stoxx_rv: iv('stoxx-rv'),
         narrative: $('narrative').checked,
         session_id: sessionId,
     };
@@ -279,7 +342,7 @@ async function analyze() {
             $('warnings').appendChild(el('div', `✗ ${idx}: ${err}`, 'error'));
         }
         for (const idx of Object.keys(data.contracts)) {
-            $('results').appendChild(renderTable(idx, data.candidates[idx] || [], data.contracts[idx]));
+            $('results').appendChild(bloqueIndice(idx, data));
         }
 
         const narrative = data.narrative;

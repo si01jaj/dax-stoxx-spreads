@@ -19,7 +19,10 @@ SYSTEM_PROMPT = (
     "2) Si una cifra no está en la tabla, no la menciones.\n"
     "3) No propongas estructuras ni strikes que no estén en la tabla.\n"
     "4) Puedes descartar candidatos y explicar por qué, con criterio de riesgo.\n"
-    "5) Responde SOLO con JSON válido, sin markdown ni texto adicional."
+    "5) La tabla puede traer estructuras de crédito (cobras prima) y de débito (pagas prima). "
+    "No hay una dirección preferida: elige por las cifras, no por costumbre.\n"
+    "6) Cuando el beneficio sea ilimitado el ROC no aplica: no lo compares con verticales.\n"
+    "7) Responde SOLO con JSON válido, sin markdown ni texto adicional."
 )
 
 RESPONSE_SCHEMA = """{
@@ -59,18 +62,20 @@ def build_prompt(payload: dict, max_rows: int = 10) -> str:
         )
 
     lines.append("")
-    lines.append("CANDIDATOS (calculados; crédito y métricas en puntos de índice y EUR)")
+    lines.append("CANDIDATOS (calculados; prima y métricas en puntos de índice y EUR)")
     for idx, rows in payload.get("candidates", {}).items():
         if not rows:
             lines.append(f"- {idx}: ninguna estructura supera los filtros")
             continue
         for row in rows[:max_rows]:
             legs = " / ".join(f"{l['side'][0].upper()}{l['kind'][0].upper()}{l['strike']:.0f}" for l in row["legs"])
+            max_p = "ilimitado" if row["max_profit_eur"] is None else f"{row['max_profit_eur']} EUR"
+            roc = "n/a" if row["roc"] is None else f"{row['roc']:.1%}"
             lines.append(
-                f"- id={row['id']} | {row['name']} | {legs} | crédito={row['credit_pts']} pts "
-                f"({row['credit_eur']} EUR) | maxP={row['max_profit_eur']} EUR | "
+                f"- id={row['id']} | {row['name']} | {row['direction']} | {legs} | "
+                f"prima={row['premium_pts']} pts ({row['premium_eur']} EUR) | maxP={max_p} | "
                 f"maxL={row['max_loss_eur']} EUR | POP={row['pop']:.0%} | EV={row['ev_pts']} pts "
-                f"({row['ev_eur']} EUR) | ROC={row['roc']:.1%} | BE={row['breakevens']} | score={row['score']}"
+                f"({row['ev_eur']} EUR) | ROC={roc} | BE={row['breakevens']} | score={row['score']}"
             )
     lines.append("")
     lines.append("Responde con este JSON exacto:")
