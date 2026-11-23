@@ -52,9 +52,9 @@ def test_semanales_de_diciembre_2026_no_incluyen_navidad():
 
 
 def test_ticker_mensual_y_semanal():
-    assert Contract("DAX", date(2026, 11, 27), "weekly", 4).ticker == "ODAX4"
+    assert Contract("DAX", date(2026, 11, 27), "weekly", 4).ticker == "ODX4"
     assert Contract("DAX", date(2026, 11, 20), "monthly").ticker == "ODAX"
-    assert Contract("STOXX", date(2026, 11, 27), "weekly", 4).ticker == "OESX4"
+    assert Contract("STOXX", date(2026, 11, 27), "weekly", 4).ticker == "OES4"
     assert Contract("STOXX", date(2026, 12, 18), "monthly").ticker == "OESX"
 
 
@@ -77,13 +77,13 @@ def test_dte_es_fraccion_de_dia_con_hora():
 def test_select_contract_semanal_regresion_11_diciembre():
     now = datetime(2026, 12, 11, 10, 0, tzinfo=timezone.utc)  # 11:00 CET, aún negociable
     c = cal.select_contract("DAX", "weekly", now=now)
-    assert c.expiry == date(2026, 12, 11) and c.ticker == "ODAX2"
+    assert c.expiry == date(2026, 12, 11) and c.ticker == "ODX2"
 
 
 def test_select_contract_salta_vencimiento_inminente_y_navidad():
     now = datetime(2026, 12, 11, 12, 45, tzinfo=timezone.utc)  # 13:45 CET: ya venció
     c = cal.select_contract("DAX", "weekly", now=now)
-    assert c.expiry == date(2027, 1, 8) and c.ticker == "ODAX2"
+    assert c.expiry == date(2027, 1, 8) and c.ticker == "ODX2"
 
 
 def test_select_contract_mensual_y_saltos():
@@ -98,3 +98,16 @@ def test_sin_vencimiento_por_la_noche_no_falla():
     now = datetime(2026, 11, 27, 8, 0, tzinfo=timezone.utc)   # 09:00 CET, vence 13:00 CET
     c = cal.select_contract("DAX", "weekly", now=now)
     assert c.expiry == date(2026, 11, 27)
+
+
+def test_codigos_de_producto_coinciden_con_eurex():
+    """Semanales = ODX*/OES*, mensuales = ODAX/OESX (Trading Calendar de Eurex)."""
+    for index, weekly, monthly in (("DAX", "ODX", "ODAX"), ("STOXX", "OES", "OESX")):
+        w = Contract(index, date(2026, 11, 27), "weekly", 4)
+        m = Contract(index, date(2026, 12, 18), "monthly")
+        assert w.ticker == f"{weekly}4"
+        assert m.ticker == monthly
+        weeklies = [Contract(index, f, "weekly", k).ticker
+                    for f, k in cal.weekly_expiries(2026, 11)]
+        assert all(t.startswith(weekly) for t in weeklies), weeklies
+        assert not any(t.startswith(monthly) for t in weeklies), weeklies

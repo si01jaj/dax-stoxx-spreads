@@ -30,7 +30,8 @@ ExpiryKind = Literal["weekly", "monthly"]
 @dataclass(frozen=True)
 class IndexSpec:
     name: str
-    prefix: str                 # prefijo del ticker en el bróker (ODAX / OESX)
+    prefix: str                 # producto del vencimiento mensual (ODAX / OESX)
+    weekly_prefix: str          # producto de las semanales (ODX / OES), ver nota
     expiry_time: time           # fin de negociación el día de vencimiento (CET)
     multiplier: float           # EUR por punto de índice
     strike_interval: float      # incremento de strike en la zona del dinero
@@ -44,6 +45,7 @@ SPECS: dict[str, IndexSpec] = {
     "DAX": IndexSpec(
         name="DAX",
         prefix="ODAX",
+        weekly_prefix="ODX",     # Eurex: DAX Weekly Options = ODX1/ODX2/ODX4/ODX5
         expiry_time=time(13, 0),
         multiplier=5.0,
         strike_interval=50.0,
@@ -54,6 +56,7 @@ SPECS: dict[str, IndexSpec] = {
     "STOXX": IndexSpec(
         name="STOXX",
         prefix="OESX",
+        weekly_prefix="OES",     # Eurex: EURO STOXX 50 weekly options = OES1/OES2/OES4/OES5
         expiry_time=time(12, 0),
         multiplier=10.0,
         strike_interval=25.0,
@@ -183,10 +186,15 @@ class Contract:
 
     @property
     def ticker(self) -> str:
-        """Ticker tipo bróker: mensual = ODAX/OESX; semanal = ODAX1..ODAX5."""
+        """Product code de Eurex.
+
+        Mensual: ODAX / OESX. Semanal: ODX1..ODX5 (DAX) y OES1..OES5 (EURO STOXX 50),
+        según el Trading Calendar y la lista de productos de Eurex. La semana del
+        tercer viernes es el mensual, así que nunca hay número 3.
+        """
         if self.kind == "monthly":
             return self.spec.prefix
-        return f"{self.spec.prefix}{self.week}"
+        return f"{self.spec.weekly_prefix}{self.week}"
 
     @property
     def expiry_dt(self) -> datetime:

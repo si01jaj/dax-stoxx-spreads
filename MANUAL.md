@@ -169,11 +169,19 @@ llega por `http://127.0.0.1:8001` sin abrir puertos en el cortafuegos.
 
 | Viernes del mes | DAX | STOXX | Notas |
 |---|---|---|---|
-| Semana 1 | `ODAX1` | `OESX1` | |
-| Semana 2 | `ODAX2` | `OESX2` | |
-| Semana 3 | `ODAX` | `OESX` | mensual |
-| Semana 4 | `ODAX4` | `OESX4` | |
-| Semana 5 | `ODAX5` | `OESX5` | solo si existe |
+| Semana 1 | `ODX1` | `OES1` | |
+| Semana 2 | `ODX2` | `OES2` | |
+| Semana 3 | `ODAX` | `OESX` | **mensual** (sin dígito) |
+| Semana 4 | `ODX4` | `OES4` | |
+| Semana 5 | `ODX5` | `OES5` | solo si existe |
+
+Códigos según el *Trading Calendar* y la lista de productos de Eurex: las semanales
+son productos propios (`ODX*` / `OES*`), no `ODAX1..5`. Si el bróker muestra otro
+código, prevalecen el broker y la ficha de Eurex de ese día.
+
+Opciones **diarias** (0–1 DTE, liquidan sobre el cierre y dejan de cotizar a las
+17:30 CET): `ODAP` en el DAX y `OEXP` en el EURO STOXX 50. Aún no están en el
+selector de vencimientos; si las operas, se añaden como tipo de vencimiento.
 
 | Índice | Multiplicador | Tick de strike | Dividendo |
 |---|---|---|---|
