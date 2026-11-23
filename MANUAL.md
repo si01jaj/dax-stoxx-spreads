@@ -4,7 +4,7 @@ Recomendador de estructuras de crédito sobre **DAX 40 (ODAX)** y **EURO STOXX 5
 Todo el cálculo es determinista y verificable; el LLM (opcional) solo redacta sobre
 números ya calculados.
 
-> v2.0 — reescritura del motor. Ver [Cambios frente a la v1](#cambios-frente-a-la-v1).
+> v2.1 — motor determinista y datos manuales. Ver [Cambios frente a la v1](#cambios-frente-a-la-v1).
 
 ---
 

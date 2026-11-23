@@ -230,7 +230,7 @@ class CandidateConfig:
     min_ev_pts: float = 0.0
     include_iron_condors: bool = True
     max_candidates: int = 12
-    min_per_kind: int = 3
+    per_kind: int = 4            # huecos reservados por tipo de estructura
 
 
 # --------------------------------------------------------------------------- #
@@ -471,26 +471,29 @@ def build_candidates(
 
 
 def rank(candidates: list[Spread], cfg: CandidateConfig | None = None, include_rejected: bool = False) -> list[Spread]:
-    """Ordena por score garantizando diversidad de estructuras.
+    """Ordena por score con representación equilibrada por tipo.
 
-    Ordenar solo por EV/riesgo deja fuera los verticales, porque un cóndor del
-    mismo ancho cobra ~el doble de prima con el mismo max loss. Se reservan
-    `min_per_kind` huecos por tipo antes de completar por score global.
+    Ordenar solo por EV/riesgo entierra los verticales: un iron condor del mismo
+    ancho cobra ~el doble de prima con el mismo max loss, así que siempre gana el
+    cociente. Se reservan `per_kind` huecos por tipo (4 bull puts, 4 bear calls,
+    4 iron condors por defecto) y luego los huecos sobrantes se rellenan por
+    score global. Dentro de la tabla se sigue ordenando por score.
     """
     cfg = cfg or CandidateConfig()
     accepted = sorted([c for c in candidates if c.accepted], key=lambda c: c.score, reverse=True)
     picked: list[Spread] = []
     seen: set[int] = set()
     for kind in ("bull_put", "bear_call", "iron_condor"):
-        for spread in [c for c in accepted if c.kind == kind][: cfg.min_per_kind]:
+        for spread in [c for c in accepted if c.kind == kind][: cfg.per_kind]:
             picked.append(spread)
             seen.add(id(spread))
-    for spread in accepted:
-        if len(picked) >= cfg.max_candidates:
-            break
-        if id(spread) not in seen:
-            picked.append(spread)
-            seen.add(id(spread))
+    if len(picked) < cfg.max_candidates:      # rellenar si algún tipo no tiene 4 válidos
+        for spread in accepted:
+            if len(picked) >= cfg.max_candidates:
+                break
+            if id(spread) not in seen:
+                picked.append(spread)
+                seen.add(id(spread))
     picked = picked[: cfg.max_candidates]
     picked.sort(key=lambda c: c.score, reverse=True)
     if include_rejected:

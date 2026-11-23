@@ -118,6 +118,28 @@ def test_orden_por_score_y_limite():
     assert scores == sorted(scores, reverse=True)
 
 
+def test_ranking_equilibrado_por_tipo():
+    """4 por tipo: los verticales no quedan enterrados por los cóndores."""
+    rows = build_candidates("DAX", CONTRACT, SPOT, SURFACE, R, CandidateConfig())
+    top = rank(rows, CandidateConfig())
+    kinds = [r.kind for r in top]
+    for kind in ("bull_put", "bear_call", "iron_condor"):
+        disponibles = [r for r in rows if r.accepted and r.kind == kind]
+        assert kinds.count(kind) == min(len(disponibles), CandidateConfig().per_kind)
+    assert len(top) == 12
+    # y sigue ordenado por score global
+    assert [r.score for r in top] == sorted([r.score for r in top], reverse=True)
+
+
+def test_ranking_rellena_si_un_tipo_no_llega():
+    """Si un tipo no tiene suficientes válidos, los huecos se rellenan con otros."""
+    cfg = CandidateConfig(include_iron_condors=False, per_kind=4)
+    rows = build_candidates("DAX", CONTRACT, SPOT, SURFACE, R, cfg)
+    top = rank(rows, cfg)
+    assert len(top) == CandidateConfig().max_candidates
+    assert all(r.kind in ("bull_put", "bear_call") for r in top)
+
+
 def test_aceptados_cumplen_todos_los_filtros():
     cfg = CandidateConfig()
     rows = [r for r in build_candidates("DAX", CONTRACT, SPOT, SURFACE, R, cfg) if r.accepted]
