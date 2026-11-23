@@ -133,6 +133,8 @@ def health() -> dict:
         "version": VERSION,
         "auth_required": bool(APP_TOKEN),
         "iv_fallback": marketdata.ALLOW_IV_FALLBACK,
+        "iv_provider": marketdata.IV_PROVIDER,
+        "spot_provider": marketdata.SPOT_PROVIDER,
     }
 
 
@@ -166,7 +168,7 @@ def defaults(
             errors[index] = spot.note or "sin precio"
             continue
         if not iv.ok:
-            warnings.append(f"{index}: {iv.note} → introduce la IV ATM a mano")
+            warnings.append(f"{index}: {iv.note}" if iv.note else f"{index}: IV no disponible")
         try:
             contract = select_contract(index, kind, now=ref, months_ahead=skip)
         except ValueError as exc:

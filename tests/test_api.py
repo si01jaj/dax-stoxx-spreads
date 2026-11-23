@@ -139,5 +139,5 @@ def test_defaults_devuelve_precio_aunque_falte_la_iv(client, monkeypatch):
     data = r.json()
     assert data["markets"]["DAX"]["spot"]["value"] == 25000.0
     assert data["markets"]["DAX"]["atm_iv"]["value"] is None
-    assert any("mano" in w for w in data["warnings"])
+    assert any("DAX" in w and "IV" in w for w in data["warnings"])
     assert "DAX" in data["contracts"]

@@ -22,6 +22,13 @@ CACHE_TTL = float(os.getenv("MARKET_CACHE_TTL", "60"))
 ALLOW_IV_FALLBACK = os.getenv("ALLOW_IV_FALLBACK", "0") == "1"
 DEFAULT_IV = float(os.getenv("DEFAULT_IV", "0.20"))
 
+# "none" (por defecto): la IV se teclea desde el bróker y no se hace ninguna
+# petición para buscarla. "yahoo": intenta los índices de volatilidad (hoy
+# devuelven 404, pero se deja como opción por si vuelven).
+IV_PROVIDER = os.getenv("IV_PROVIDER", "none").strip().lower()
+# "yahoo" para precargar el contado; "manual" si el equipo no debe salir a internet.
+SPOT_PROVIDER = os.getenv("SPOT_PROVIDER", "yahoo").strip().lower()
+
 
 @dataclass
 class Quote:
@@ -102,6 +109,8 @@ def _yahoo_last(ticker: str) -> float | None:
 def get_spot(index: str, override: float | None = None) -> Quote:
     if override is not None:
         return Quote(float(override), "manual", note="precio introducido por el usuario")
+    if SPOT_PROVIDER != "yahoo":
+        return Quote(None, "missing", note="modo manual: introduce el precio de tu bróker")
     key = (index, "spot")
     if (hit := _cached(key)) is not None:
         return hit
@@ -116,9 +125,15 @@ def get_spot(index: str, override: float | None = None) -> Quote:
 
 
 def get_atm_iv(index: str, override: float | None = None) -> Quote:
-    """IV ATM en tanto por uno (0.20 = 20%)."""
+    """IV ATM en tanto por uno (0.20 = 20%).
+
+    Con IV_PROVIDER=none (por defecto) esta función no hace ninguna petición de
+    red: la IV es un dato que el usuario aporta desde su bróker.
+    """
     if override is not None and override > 0:
         return Quote(float(override), "manual", note="IV introducida por el usuario")
+    if IV_PROVIDER != "yahoo":
+        return Quote(None, "missing", note="modo manual: introduce la IV ATM de tu bróker")
     key = (index, "iv")
     if (hit := _cached(key)) is not None:
         return hit
@@ -153,8 +168,10 @@ def build_snapshot(
                 "Los resultados NO reflejan el mercado real."
             )
         else:
-            raise ValueError(
-                f"{index}: IV ATM no disponible ({iv.note}). "
-                "Introduce la IV de tu bróker o activa ALLOW_IV_FALLBACK=1."
+            hint = (
+                " Introduce la IV de tu bróker o activa ALLOW_IV_FALLBACK=1."
+                if IV_PROVIDER == "yahoo"
+                else ""
             )
+            raise ValueError(f"{index}: IV ATM no disponible — {iv.note}.{hint}")
     return MarketSnapshot(index=index, spot=spot, atm_iv=iv, warnings=warnings)

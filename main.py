@@ -37,7 +37,8 @@ DISCLAIMER = (
 )
 
 
-def _parse_pairs(values: list[str] | None) -> dict[str, float | None]:
+def _parse_pairs(values: list[str] | None, percent: bool = False) -> dict[str, float | None]:
+    """Interpreta `IDX=VALOR` repetidos. Con percent=True admite 25.6 y 0.256."""
     out: dict[str, float | None] = {}
     for item in values or []:
         if "=" not in item:
@@ -46,7 +47,10 @@ def _parse_pairs(values: list[str] | None) -> dict[str, float | None]:
         key = key.strip().upper()
         if key not in INDICES:
             raise ValueError(f"índice desconocido '{key}' (usa {'/'.join(INDICES)})")
-        out[key] = float(raw.replace(",", "."))
+        value = float(raw.replace(",", ".").replace("%", "").strip())
+        if percent and value > 3.0:      # 25.6 = 25,6% ; 0.256 = fracción
+            value = value / 100.0
+        out[key] = value
     return out
 
 
@@ -244,7 +248,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index", default="DAX,STOXX", help="DAX, STOXX o ambos separados por coma")
     parser.add_argument("--expiry", default="semanal", choices=sorted(EXPIRY_MAP), help="vencimiento objetivo")
     parser.add_argument("--spot", action="append", metavar="IDX=PRECIO", help="precio de contado manual")
-    parser.add_argument("--iv", action="append", metavar="IDX=IV", help="IV ATM manual en tanto por uno (0.256)")
+    parser.add_argument(
+        "--iv",
+        action="append",
+        metavar="IDX=IV",
+        help="IV ATM del bróker; admite 25.6 o 0.256 (del vencimiento elegido)",
+    )
     parser.add_argument("--no-llm", action="store_true", help="solo tabla determinista")
     parser.add_argument("--json", action="store_true", help="salida JSON completa")
     parser.add_argument("--min-pop", type=float, default=None)
@@ -267,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             indices=indices,
             expiry_type=args.expiry,
             spot_overrides=_parse_pairs(args.spot),
-            iv_overrides=_parse_pairs(args.iv),
+            iv_overrides=_parse_pairs(args.iv, percent=True),
             use_llm=not args.no_llm,
             config=cfg,
         )

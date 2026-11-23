@@ -48,7 +48,7 @@
                 <span class="hint" id="dax-price-hint"></span>
             </div>
             <div class="field">
-                <label>DAX — IV ATM %</label>
+                <label>DAX — IV ATM % (del vencimiento)</label>
                 <input type="text" id="dax-iv" placeholder="p.ej. 25.6" inputmode="decimal">
                 <span class="hint" id="dax-iv-hint"></span>
             </div>
@@ -58,7 +58,7 @@
                 <span class="hint" id="stoxx-price-hint"></span>
             </div>
             <div class="field">
-                <label>STOXX — IV ATM %</label>
+                <label>STOXX — IV ATM % (del vencimiento)</label>
                 <input type="text" id="stoxx-iv" placeholder="p.ej. 22.0" inputmode="decimal">
                 <span class="hint" id="stoxx-iv-hint"></span>
             </div>
@@ -92,8 +92,9 @@
 
     <footer>
         Herramienta de análisis, no asesoramiento financiero. Cifras teóricas sin comisiones,
-        horquilla ni margen PRMS. Los índices de volatilidad de Yahoo no están disponibles:
-        introduce la IV de tu bróker para que el resultado refleje el mercado.
+        horquilla ni margen PRMS. Los datos de precio e IV se introducen a mano desde el bróker:
+        no hay feed de opciones conectado, así que la calidad del resultado depende de esos dos datos.
+        La IV debe ser la del vencimiento seleccionado.
     </footer>
 </div>
 
@@ -140,7 +141,7 @@ async function loadDefaults() {
             $(id + '-price-hint').textContent = market.spot.source;
             $(id + '-iv').value = iv !== null ? (iv * 100).toFixed(1) : '';
             $(id + '-iv-hint').textContent = iv === null
-                ? 'no disponible — introdúcelo a mano'
+                ? 'manual: cópiala del bróker'
                 : market.atm_iv.source;
         }
         const c = (data.contracts || {}).DAX || (data.contracts || {}).STOXX;
@@ -232,6 +233,17 @@ async function analyze() {
     if ($('idx-dax').checked) indices.push('DAX');
     if ($('idx-stoxx').checked) indices.push('STOXX');
     if (!indices.length) { $('status').textContent = 'elige al menos un índice'; return; }
+
+    // Validación en cliente: la IV es un dato que aporta el usuario, no se inventa.
+    const missing = indices.filter((idx) => {
+        const field = $(idx === 'DAX' ? 'dax-iv' : 'stoxx-iv').value.trim();
+        return field === '' || num(field) === null || num(field) <= 0;
+    });
+    if (missing.length) {
+        $('status').textContent = `falta la IV ATM de ${missing.join(' y ')} — introdúcela desde tu bróker`;
+        for (const idx of missing) $(idx === 'DAX' ? 'dax-iv' : 'stoxx-iv').focus();
+        return;
+    }
 
     const iv = (id) => { const v = num($(id).value); return v === null ? null : v / 100; };
     const body = {

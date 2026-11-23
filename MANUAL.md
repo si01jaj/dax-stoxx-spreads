@@ -46,24 +46,42 @@ implícita y realizada.
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
-# La IV de Yahoo no está disponible: se pasa a mano (en tanto por uno)
-python main.py --expiry semanal --iv DAX=0.256 --iv STOXX=0.220 --no-llm
+# La IV se copia de tu bróker, en % tal cual (25.6) o en fracción (0.256)
+python main.py --expiry semanal --iv DAX=25.6 --iv STOXX=22.0 --no-llm
+
+# Precio a mano también (entonces solo se usa el calendario, cero red)
+python main.py --expiry 2m --spot DAX=25000 --spot STOXX=6000 \
+               --iv DAX=24 --iv STOXX=21 --no-llm
 
 # Salida completa en JSON (para guardar, comparar o procesar)
-python main.py --expiry 2m --iv DAX=0.24 --json > analisis.json
-
-# Sin redacción del LLM
-python main.py --no-llm
+python main.py --expiry 3m --iv DAX=23.5 --json > analisis.json
 
 # Filtros
 python main.py --min-pop 0.75 --max-width 4
 ```
 
 Opciones: `--index DAX,STOXX`, `--expiry semanal|mensual|2m|3m`,
-`--spot DAX=25000`, `--iv DAX=0.256`, `--no-llm`, `--json`, `--min-pop`, `--max-width`.
+`--spot DAX=25000`, `--iv DAX=25.6`, `--no-llm`, `--json`, `--min-pop`, `--max-width`.
 
 Sin `DEEPSEEK_API_KEY` la herramienta funciona igual: muestra la tabla y avisa de que
 no hay redacción.
+
+### Datos manuales (modo por defecto, sin feed)
+
+No hay ninguna fuente de opciones conectada, y no hace falta: se introducen dos datos
+por índice.
+
+| Dato | De dónde sale | Nota |
+|---|---|---|
+| Precio del subyacente | bróker o Yahoo (precarga) | `SPOT_PROVIDER=yahoo` para precargar, `manual` para no salir a internet |
+| **IV ATM del vencimiento elegido** | pantalla de opciones del bróker, serie ATM | es la del vencimiento que vas a operar, no el VDAX a 30 días |
+
+Con `IV_PROVIDER=none` (por defecto) la aplicación **no intenta** buscar volatilidad en
+Yahoo: ni peticiones, ni esperas, ni el 20% silencioso de la v1. Si falta la IV, la API
+responde 422 con el motivo y la CLI dice qué índice falta.
+
+Calidad del resultado = calidad de esos dos datos. El resto (calendario, primas,
+skew, POP, EV, ROC, escenarios) se calcula aquí y es reproducible.
 
 ---
 
@@ -110,6 +128,8 @@ llega por `http://127.0.0.1:8001` sin abrir puertos en el cortafuegos.
 |---|---|---|
 | `DEEPSEEK_API_KEY` | — | sin ella no hay redacción (la tabla funciona igual) |
 | `LLM_MODEL` / `LLM_BASE_URL` / `LLM_TIMEOUT` | `deepseek-chat` / api.deepseek.com / 90 | proveedor del LLM |
+| `IV_PROVIDER` | `none` | `none` = IV manual, sin red; `yahoo` = intentarla (hoy 404) |
+| `SPOT_PROVIDER` | `yahoo` | `yahoo` precarga el contado; `manual` no sale a internet |
 | `VOL_SKEW` | `0.0217` | pendiente de skew (vol absoluta por unidad de z) |
 | `RISK_FREE_RATE` | `0.025` | tipo sin riesgo para el forward |
 | `ALLOW_IV_FALLBACK` | `0` | `1` = usar `DEFAULT_IV` marcándolo como **ASUMIDA** |
