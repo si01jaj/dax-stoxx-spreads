@@ -27,6 +27,9 @@ Para cada índice y vencimiento:
    | Débito (pagas prima) | bull call, bear put, straddle, strangle | BCd, BPd, STD, STR |
 
    Se muestran **las 2 mejores de cada clase** (no más), ordenadas por EV/riesgo.
+   El **ancho** de cada spread escala con el expected move (10%, 20% y 35% de 1σ):
+   así un semanal usa 100/150/250 pts y un 3 meses 250/550/950, en vez de repetir
+   los mismos 400 puntos en plazos donde eso sería casi un digital.
 4. **Métricas deterministas**: prima neta, beneficio y pérdida máximos, breakevens,
    POP implícita y real, valor esperado y ROC.
 5. **Escenarios** de P&L a vencimiento en ±1σ y ±2σ.
@@ -178,10 +181,6 @@ llega por `http://127.0.0.1:8001` sin abrir puertos en el cortafuegos.
 Códigos según el *Trading Calendar* y la lista de productos de Eurex: las semanales
 son productos propios (`ODX*` / `OES*`), no `ODAX1..5`. Si el bróker muestra otro
 código, prevalecen el broker y la ficha de Eurex de ese día.
-
-Opciones **diarias** (0–1 DTE, liquidan sobre el cierre y dejan de cotizar a las
-17:30 CET): `ODAP` en el DAX y `OEXP` en el EURO STOXX 50. Aún no están en el
-selector de vencimientos; si las operas, se añaden como tipo de vencimiento.
 
 | Índice | Multiplicador | Tick de strike | Dividendo |
 |---|---|---|---|

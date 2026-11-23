@@ -361,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.min_pop is not None:
         cfg.min_pop = args.min_pop
     if args.max_width is not None:
-        cfg.width_ticks = tuple(w for w in cfg.width_ticks if w <= args.max_width) or (args.max_width,)
+        cfg.max_width_ticks = args.max_width
 
     try:
         payload = run_analysis(

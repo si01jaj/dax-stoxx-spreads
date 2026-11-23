@@ -29,7 +29,7 @@ import analyst
 import main as engine
 import marketdata
 
-VERSION = "2.2.1"
+VERSION = "2.2.2"
 APP_TOKEN = os.getenv("APP_TOKEN", "")
 _cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 

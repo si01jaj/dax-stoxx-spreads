@@ -231,7 +231,13 @@ def market_metrics(
 class CandidateConfig:
     put_deltas: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.30)
     call_deltas: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.30)
-    width_ticks: tuple[int, ...] = (2, 3, 4, 6, 8)
+    # Anchos en fracciones del expected move 1σ: así escalan de la semanal al 3 meses.
+    # Con 4 DTE y 23% de IV, EM≈600 pts ⇒ anchos de 100/150/250 pts.
+    # Con 81 DTE, EM≈2.700 pts ⇒ anchos de 250/550/950 pts.
+    width_em: tuple[float, ...] = (0.10, 0.20, 0.35)
+    width_ticks: tuple[int, ...] = (2, 3, 4, 6, 8)   # solo si width_em está vacío
+    min_width_ticks: int = 2
+    max_width_ticks: int | None = None
     debit_deltas: tuple[float, ...] = (0.25, 0.35, 0.45)
     strangle_deltas: tuple[float, ...] = (0.15, 0.20, 0.25)
     realized_vol_factor: float = float(os.getenv("REALIZED_VOL_FACTOR", "0.90"))
@@ -490,6 +496,23 @@ def long_strangle(index, contract, spot, surface, r, delta, cfg, dte_days, expec
 # --------------------------------------------------------------------------- #
 # Universo y ranking
 # --------------------------------------------------------------------------- #
+def _width_ticks(spot: float, surface: VolSurface, T: float, tick: float, cfg: CandidateConfig) -> list[int]:
+    """Anchos en ticks: proporcionales al expected move, con suelo y techo.
+
+    Un spread de 400 puntos sobre un EM de 2.700 (3 meses) es casi un digital;
+    escalar el ancho con σ√T mantiene la estructura con sentido en todos los plazos.
+    """
+    if cfg.width_em and T > 0:
+        em = spot * surface.atm * float(np.sqrt(T))
+        ticks = sorted({max(cfg.min_width_ticks, int(round(em * frac / tick))) for frac in cfg.width_em})
+    else:
+        ticks = sorted(cfg.width_ticks)
+    if cfg.max_width_ticks:
+        capped = [t for t in ticks if t <= cfg.max_width_ticks]
+        ticks = capped or [cfg.max_width_ticks]
+    return ticks
+
+
 def build_candidates(
     index: str,
     contract: Contract,
@@ -506,21 +529,22 @@ def build_candidates(
     em = spot * surface.atm * float(np.sqrt(T)) if T > 0 else 0.0
     kw = dict(index=index, contract=contract, spot=spot, surface=surface, r=r,
               cfg=cfg, dte_days=dte_days, expected_move=em, sigma_realized=sigma_realized)
+    widths = _width_ticks(spot, surface, T, SPECS[index].strike_interval, cfg)
     out: list[Spread] = []
     for d in cfg.put_deltas:
-        for w in cfg.width_ticks:
+        for w in widths:
             out.append(bull_put_spread(short_delta=d, width_ticks=w, **kw))
     for d in cfg.call_deltas:
-        for w in cfg.width_ticks:
+        for w in widths:
             out.append(bear_call_spread(short_delta=d, width_ticks=w, **kw))
     if cfg.include_iron_condors:
         for dp in cfg.put_deltas:
             for dc in cfg.call_deltas:
-                for w in cfg.width_ticks:
+                for w in widths:
                     out.append(iron_condor(put_delta=dp, call_delta=dc, width_ticks=w, **kw))
     if cfg.include_debits:
         for d in cfg.debit_deltas:
-            for w in cfg.width_ticks:
+            for w in widths:
                 out.append(bull_call_spread(short_delta=d, width_ticks=w, **kw))
                 out.append(bear_put_spread(short_delta=d, width_ticks=w, **kw))
         if cfg.include_vol_structures:

@@ -236,6 +236,18 @@ def test_aceptados_cumplen_sus_filtros():
             assert r.debit <= cfg.max_debit_frac * r.spot
 
 
+def test_anchos_escalan_con_el_plazo():
+    """El ancho se dimensiona con el expected move: 4 DTE ≠ 81 DTE."""
+    from structures import _width_ticks
+
+    corto = _width_ticks(SPOT, SURFACE, 4 / 365, 50, CandidateConfig())
+    largo = _width_ticks(SPOT, SURFACE, 81 / 365, 50, CandidateConfig())
+    assert corto[0] >= 2                       # suelo en ticks
+    assert max(corto) < max(largo)
+    assert max(corto) * 50 < 0.5 * (SPOT * IV * (4 / 365) ** 0.5) * 3   # sigue siendo fracción del EM
+    assert max(largo) * 50 <= 0.6 * (SPOT * IV * (81 / 365) ** 0.5)
+
+
 def test_stoxx_usa_dividendo():
     from eurex_calendar import SPECS
 
