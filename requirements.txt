@@ -1,9 +1,10 @@
-openai>=1.0.0
-yfinance>=0.2.36
-scipy>=1.10.0
-numpy>=1.24.0
-rich>=13.0.0
-python-dotenv>=1.0.0
-fastapi>=0.100.0
-uvicorn>=0.23.0
-pydantic>=2.0.0
+# Versiones fijadas: builds reproducibles (se renuevan a propósito, no por sorpresa).
+numpy==2.5.5
+scipy==1.18.1
+yfinance==1.8.0
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
+rich==15.0.0
+openai==3.57.0
+python-dotenv==1.2.4

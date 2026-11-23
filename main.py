@@ -1,411 +1,289 @@
+"""Motor de análisis de estructuras de crédito sobre ODAX y OESX.
+
+Uso CLI:
+    python main.py --expiry semanal --iv DAX=0.256 --no-llm
+    python main.py --expiry 2m --json > analisis.json
+
+El resultado es siempre el mismo diccionario que consume la API: mercados con
+su fuente de dato, contratos elegidos, tabla de candidatos calculada y, si se
+pide, la redacción del LLM.
+"""
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timezone
 
-import numpy as np
-import yfinance as yf
-from dotenv import load_dotenv
-from openai import OpenAI
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from scipy.stats import norm
+from eurex_calendar import SPECS, ExpiryKind, select_contract
+from marketdata import build_snapshot
+from pricing import VolSurface
+from structures import CandidateConfig, build_candidates, rank
 
-load_dotenv()
-sys.stdout.reconfigure(encoding='utf-8')
-console = Console(force_terminal=True)
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+INDICES = ("DAX", "STOXX")
 
-RISK_FREE_RATE = 0.025
-DAX_MULTIPLIER = 5
-STOXX_MULTIPLIER = 10
-
-INDICES = {
-    "DAX 40": {
-        "price_ticker": "^GDAXI",
-        "alt_iv_tickers": ["^V1XI", "^VDAX", "VDAX=F", "VDAX-BILI"],
-        "multiplier": DAX_MULTIPLIER,
-        "strike_interval": 50,
-        "strike_range": 0.06,
-        "ticker_prefix": "ODAX",
-    },
-    "EURO STOXX 50": {
-        "price_ticker": "^STOXX50E",
-        "alt_iv_tickers": ["^V2TX", "^VSTOXX", "VSTOXX=F"],
-        "multiplier": STOXX_MULTIPLIER,
-        "strike_interval": 25,
-        "strike_range": 0.06,
-        "ticker_prefix": "OESX",
-    },
+# tipo de UI -> (tipo de vencimiento, vencimientos a saltar)
+EXPIRY_MAP: dict[str, tuple[ExpiryKind, int]] = {
+    "semanal": ("weekly", 0),
+    "mensual": ("monthly", 0),
+    "2m": ("monthly", 1),
+    "3m": ("monthly", 2),
 }
 
-
-def friday_week_of_month(d: date) -> int:
-    """Return which week-of-month (1-5) this Friday belongs to."""
-    month_start = d.replace(day=1)
-    friday_count = 1
-    current = month_start
-    while current <= d:
-        if current.weekday() == 4:
-            if current == d:
-                return friday_count
-            friday_count += 1
-        current += timedelta(days=1)
-    return friday_count
+DISCLAIMER = (
+    "Herramienta de análisis. No es asesoramiento financiero. "
+    "Las cifras son teóricas: no incluyen comisiones, horquilla ni margen PRMS."
+)
 
 
-def contract_ticker(name: str, expiry: date) -> str:
-    """Map index name + expiry → broker ticker (ODAX/OESX)."""
-    prefix = "ODAX" if name == "DAX 40" else "OESX"
-    wk = friday_week_of_month(expiry)
-    if wk == 3:
-        return prefix  # mensual, sin número
-    return f"{prefix}{wk}"
-
-
-def get_expiry(expiry_type: str = "semanal") -> tuple[date, int]:
-    """Return (expiry_date, dte) for the chosen horizon."""
-
-    def nth_friday(year: int, month: int, n: int) -> date:
-        first = date(year, month, 1)
-        days_to_fri = (4 - first.weekday()) % 7
-        return first + timedelta(days=days_to_fri + (n - 1) * 7)
-
-    def next_friday() -> date:
-        days = (4 - date.today().weekday()) % 7
-        return date.today() + timedelta(days=7 if days == 0 else days)
-
-    today = date.today()
-
-    if expiry_type == "semanal":
-        c = next_friday()
-        d = c + timedelta(days=7) if friday_week_of_month(c) == 3 else c
-    else:
-        months_ahead = {"mensual": 0, "2meses": 1, "3meses": 2}.get(expiry_type, 0)
-        this_monthly = nth_friday(today.year, today.month, 3)
-        if this_monthly <= today:
-            months_ahead += 1
-        target_month = today.month + months_ahead
-        target_year = today.year + (target_month - 1) // 12
-        target_month = ((target_month - 1) % 12) + 1
-        d = nth_friday(target_year, target_month, 3)
-
-    dte = (d - today).days
-    return d, dte
-
-
-def fetch_market_data(name: str, cfg: dict) -> dict:
-    price_ticker = yf.Ticker(cfg["price_ticker"])
-    info = price_ticker.info
-    price = info.get("regularMarketPrice") or info.get("currentPrice")
-    if not price:
-        raise ValueError(f"No price for {name}")
-    iv = None
-    alt_tickers = cfg.get("alt_iv_tickers", [])
-    for ticker in alt_tickers:
-        try:
-            t = yf.Ticker(ticker)
-            ti = t.info
-            iv = ti.get("regularMarketPrice") or ti.get("currentPrice") or ti.get("previousClose")
-            if iv:
-                iv = float(iv) / 100.0
-                break
-        except Exception:
-            continue
-    return {"name": name, "price": float(price), "iv_pct": iv}
-
-
-def calculate_greeks(
-    S: float, K: float, T: float, sigma: float, r: float = RISK_FREE_RATE, q: float = 0.0
-) -> dict:
-    if T <= 0 or sigma <= 0:
-        return None
-    d1 = (np.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    call_delta = np.exp(-q * T) * norm.cdf(d1)
-    put_delta = -np.exp(-q * T) * norm.cdf(-d1)
-    gamma = np.exp(-q * T) * norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    theta_call = (
-        -(S * sigma * np.exp(-q * T) * norm.pdf(d1)) / (2 * np.sqrt(T))
-        - r * K * np.exp(-r * T) * norm.cdf(d2)
-        + q * S * np.exp(-q * T) * norm.cdf(d1)
-    ) / 365.0
-    theta_put = (
-        -(S * sigma * np.exp(-q * T) * norm.pdf(d1)) / (2 * np.sqrt(T))
-        + r * K * np.exp(-r * T) * norm.cdf(-d2)
-        - q * S * np.exp(-q * T) * norm.cdf(-d1)
-    ) / 365.0
-    vega = S * np.exp(-q * T) * norm.pdf(d1) * np.sqrt(T) / 100.0
-
-    return {
-        "strike": round(float(K), 1),
-        "call_delta": round(float(call_delta), 4),
-        "put_delta": round(float(put_delta), 4),
-        "gamma": round(float(gamma), 6),
-        "theta_call": round(float(theta_call), 4),
-        "theta_put": round(float(theta_put), 4),
-        "vega": round(float(vega), 4),
-    }
-
-
-def generate_strikes(price: float, interval: float, range_pct: float) -> list[float]:
-    low = price * (1 - range_pct)
-    high = price * (1 + range_pct)
-    nearest = round(price / interval) * interval
-    strikes = []
-    k = nearest
-    while k >= low:
-        strikes.append(k)
-        k -= interval
-    k = nearest + interval
-    while k <= high:
-        strikes.append(k)
-        k += interval
-    return sorted(strikes)
-
-
-def build_chain(name: str, price: float, iv_pct: float, dte: int, cfg: dict, expiry: date) -> dict:
-    T = max(dte, 1) / 365.0
-    sigma = max(iv_pct, 0.05)
-    strikes = generate_strikes(price, cfg["strike_interval"], cfg["strike_range"])
-    options = []
-    for k in strikes:
-        g = calculate_greeks(price, k, T, sigma)
-        if g:
-            options.append(g)
-    expected_move_1sd = price * sigma * np.sqrt(T)
-    return {
-        "name": name,
-        "contract": contract_ticker(name, expiry),
-        "price": round(price, 1),
-        "iv_pct": round(sigma * 100, 1),
-        "dte": dte,
-        "expiry": expiry.isoformat(),
-        "multiplier": cfg["multiplier"],
-        "strike_interval": cfg["strike_interval"],
-        "expected_move_1sd": round(expected_move_1sd, 1),
-        "rally_scenario": round(price + expected_move_1sd, 1),
-        "drop_scenario": round(price - expected_move_1sd, 1),
-        "options": options,
-    }
-
-
-def print_summary(chain: dict):
-    t = Table(title=f"{chain['name']} — {chain['contract']} ({chain['dte']} DTE)")
-    t.add_column("Parámetro", style="cyan")
-    t.add_column("Valor", style="green")
-    t.add_row("Contrato", chain["contract"])
-    t.add_row("Vencimiento", chain["expiry"])
-    t.add_row("Precio subyacente", f"{chain['price']:,.1f}")
-    t.add_row("IV ATM", f"{chain['iv_pct']}%")
-    t.add_row("Multiplicador", f"{chain['multiplier']}€/punto")
-    t.add_row("Expected Move (±1σ)", f"±{chain['expected_move_1sd']:,.1f}")
-    t.add_row("Rango esperado", f"{chain['drop_scenario']:,.1f} — {chain['rally_scenario']:,.1f}")
-    console.print(t)
-
-    if chain["options"]:
-        g_table = Table(title=f"Greeks por strike (rejilla sintética)")
-        g_table.add_column("Strike", style="cyan")
-        g_table.add_column("Call Δ", style="green")
-        g_table.add_column("Put Δ", style="red")
-        g_table.add_column("Gamma", style="yellow")
-        g_table.add_column("Θ Call", style="magenta")
-        g_table.add_column("Θ Put", style="magenta")
-        g_table.add_column("Vega", style="blue")
-        atm_idx = min(range(len(chain["options"])), key=lambda i: abs(chain["options"][i]["strike"] - chain["price"]))
-        start = max(0, atm_idx - 5)
-        end = min(len(chain["options"]), atm_idx + 6)
-        for g in chain["options"][start:end]:
-            g_table.add_row(
-                str(g["strike"]),
-                f"{g['call_delta']:.3f}",
-                f"{g['put_delta']:.3f}",
-                f"{g['gamma']:.5f}",
-                f"{g['theta_call']:.3f}",
-                f"{g['theta_put']:.3f}",
-                f"{g['vega']:.3f}",
-            )
-        console.print(g_table)
-
-
-def build_prompt(indices_data: list, expiry_type: str = "semanal") -> str:
-    labels = {"semanal": "semanal", "mensual": "mensual", "2meses": "2 meses", "3meses": "3 meses"}
-    label = labels.get(expiry_type, "semanal")
-    prompt = f"""Actúa como un trader profesional de opciones sobre índices europeos (EUREX).
-Tu especialidad son los spreads de crédito sobre DAX 40 (ODAX) y EURO STOXX 50 (OESX)
-para el vencimiento {label}.
-
-DATOS DE MERCADO ACTUALES:
-"""
-    for idx in indices_data:
-        prompt += f"""
---- {idx['name']} ({idx['contract']}) ---
-Precio: {idx['price']:,.0f} | IV: {idx['iv_pct']}% | DTE: {idx['dte']} | Multi: {idx['multiplier']}e | EM 1sd: +/-{idx['expected_move_1sd']:,.0f}
-
-ATM Greeks:
-Strike  C_Delta  P_Delta  Gamma  Theta  Vega
-"""
-        atm_ix = min(range(len(idx["options"])), key=lambda i: abs(idx["options"][i]["strike"] - idx["price"]))
-        opts_subset = idx["options"][max(0, atm_ix - 3):min(len(idx["options"]), atm_ix + 4)]
-        for g in opts_subset:
-            prompt += f"{g['strike']:>6}  {g['call_delta']:>+5.2f}  {g['put_delta']:>+5.2f}  {g['gamma']:.4f}  {g['theta_call']:>+5.0f}  {g['vega']:.2f}\n"
-
-    prompt += """
-INSTRUCCIONES:
-Recomienda los 2 MEJORES spreads (crédito) para cada contrato.
-Muestra: tipo, strikes, delta, crédito en puntos, max profit/loss en EUR, ROC%, POP%, breakevens.
-Usa strikes cada 50 en ODAX, cada 25 en OESX.
-Prioriza ROC > 10% y POP > 70%. IV >= 18% favorable para vender.
-Si no hay buenas condiciones, di que esperes.
-Include disclaimer.
-"""
-    return prompt
-
-
-def query_llm(prompt: str) -> str:
-    if not DEEPSEEK_API_KEY:
-        return "⚠️  DEEPSEEK_API_KEY no configurada. Crea un archivo .env con tu API key."
-    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com", timeout=120.0)
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {
-                "role": "system",
-                "content": "Eres un trader de opciones europeas (EUREX). Das respuestas concisas, con tablas y datos numéricos precisos. Siempre incluyes max profit, max loss, breakevens, ROC y POP. Usas emojis. Al final incluyes disclaimer.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return response.choices[0].message.content
+def _parse_pairs(values: list[str] | None) -> dict[str, float | None]:
+    out: dict[str, float | None] = {}
+    for item in values or []:
+        if "=" not in item:
+            raise ValueError(f"formato esperado CLAVE=VALOR, recibido '{item}'")
+        key, raw = item.split("=", 1)
+        key = key.strip().upper()
+        if key not in INDICES:
+            raise ValueError(f"índice desconocido '{key}' (usa {'/'.join(INDICES)})")
+        out[key] = float(raw.replace(",", "."))
+    return out
 
 
 def run_analysis(
-    dax_price: float | None = None,
-    dax_iv: float | None = None,
-    stoxx_price: float | None = None,
-    stoxx_iv: float | None = None,
+    indices: tuple[str, ...] = INDICES,
     expiry_type: str = "semanal",
+    spot_overrides: dict[str, float | None] | None = None,
+    iv_overrides: dict[str, float | None] | None = None,
+    use_llm: bool = True,
+    risk_free: float | None = None,
+    skew: float | None = None,
+    config: CandidateConfig | None = None,
+    now: datetime | None = None,
 ) -> dict:
-    """Run full analysis and return structured results."""
-    expiry, dte = get_expiry(expiry_type)
-    chains = []
+    """Analiza los índices pedidos y devuelve el payload completo (JSON-ready)."""
+    if expiry_type not in EXPIRY_MAP:
+        raise ValueError(f"expiry_type inválido '{expiry_type}' (usa {', '.join(EXPIRY_MAP)})")
+    kind, skip = EXPIRY_MAP[expiry_type]
+    r = float(os.getenv("RISK_FREE_RATE", "0.025")) if risk_free is None else risk_free
+    sk = float(os.getenv("VOL_SKEW", "0.0217")) if skew is None else skew
+    cfg = config or CandidateConfig()
+    now = now or datetime.now(tz=timezone.utc)
 
-    overrides = {}
-    for name, cfg in INDICES.items():
-        try:
-            market = fetch_market_data(name, cfg)
-        except Exception as e:
-            return {"error": str(e)}
-        yahoo_price = market["price"]
-        yahoo_iv = market["iv_pct"]
-
-        if name == "DAX 40":
-            price = dax_price if dax_price is not None else yahoo_price
-            iv = dax_iv if dax_iv is not None else (yahoo_iv or 0.20)
-        else:
-            price = stoxx_price if stoxx_price is not None else yahoo_price
-            iv = stoxx_iv if stoxx_iv is not None else (yahoo_iv or 0.20)
-
-        chain = build_chain(name, price, iv, dte, cfg, expiry)
-        chains.append(chain)
-        overrides[name] = {"yahoo_price": yahoo_price, "yahoo_iv": yahoo_iv, "used_price": price, "used_iv": iv}
-
-    if not chains:
-        return {"error": "No market data available"}
-
-    prompt = build_prompt(chains, expiry_type)
-    response = query_llm(prompt)
-
-    return {
-        "expiry": expiry.isoformat(),
-        "dte": dte,
+    payload: dict = {
+        "generated_at": now.isoformat(timespec="seconds"),
         "expiry_type": expiry_type,
-        "data": overrides,
-        "chains": chains,
-        "response": response,
+        "risk_free_rate": r,
+        "vol_skew": sk,
+        "markets": {},
+        "contracts": {},
+        "candidates": {},
+        "rejected": {},
+        "warnings": [],
+        "errors": {},
+        "disclaimer": DISCLAIMER,
     }
 
-
-def main():
-    if not DEEPSEEK_API_KEY:
-        console.print("[red]ERROR: DEEPSEEK_API_KEY no configurada.[/red]")
-        console.print("Crea un archivo [bold].env[/bold] con: [cyan]DEEPSEEK_API_KEY=sk-tu-key[/cyan]")
-        sys.exit(1)
-
-    console.print(Panel.fit(
-        "[bold cyan]DAX & STOXX 50 - Spread Recomendador[/bold cyan]\n"
-        "[dim]Análisis de vencimientos con IA[/dim]",
-        border_style="cyan",
-    ))
-
-    console.print("\n[bold yellow]Elige vencimiento:[/bold yellow]")
-    console.print("  1. Semanal (próximo viernes no mensual)")
-    console.print("  2. Mensual (próximo 3er viernes)")
-    console.print("  3. 2 meses")
-    console.print("  4. 3 meses")
-    try:
-        opt = input("  Opción [1]: ").strip()
-        expiry_type = {"1": "semanal", "2": "mensual", "3": "2meses", "4": "3meses"}.get(opt, "semanal")
-    except (EOFError, KeyboardInterrupt):
-        expiry_type = "semanal"
-
-    exp, dte = get_expiry(expiry_type)
-    labels = {"semanal": "Semanal", "mensual": "Mensual", "2meses": "2 meses", "3meses": "3 meses"}
-    console.print(f"\n[cyan]Vencimiento {labels[expiry_type]}:[/cyan] {exp.isoformat()} ([yellow]{dte} DTE[/yellow])\n")
-
-    dax_inputs = {}
-    stoxx_inputs = {}
-    for name, cfg, inputs in [
-        ("DAX 40", INDICES["DAX 40"], dax_inputs),
-        ("EURO STOXX 50", INDICES["EURO STOXX 50"], stoxx_inputs),
-    ]:
-        with console.status(f"[cyan]Obteniendo datos de {name}...[/cyan]"):
-            try:
-                market = fetch_market_data(name, cfg)
-            except Exception as e:
-                console.print(f"[red]Error al obtener {name}: {e}[/red]")
-                continue
-
-        yahoo_price = market["price"]
-        yahoo_iv = market["iv_pct"]
-
-        console.print(f"\n[bold]{name}[/bold] — Yahoo detectó: [cyan]Precio={yahoo_price:,.1f}[/cyan] [cyan]IV={yahoo_iv*100:.1f}%[/cyan]" if yahoo_iv else f"\n[bold]{name}[/bold] — Yahoo detectó: [cyan]Precio={yahoo_price:,.1f}[/cyan] [yellow]IV no disponible[/yellow]")
-        console.print(f"  [dim]Ingresa tus datos reales (Enter para usar el de Yahoo):[/dim]")
-
+    for index in indices:
+        spec = SPECS[index]
         try:
-            pi = input(f"  Precio subyacente [{yahoo_price:,.1f}]: ").strip().replace(",", "")
-            inputs["price"] = float(pi) if pi else None
-        except (ValueError, EOFError):
-            inputs["price"] = None
+            snapshot = build_snapshot(index, (spot_overrides or {}).get(index), (iv_overrides or {}).get(index))
+            contract = select_contract(index, kind, now=now, months_ahead=skip)
+        except ValueError as exc:
+            payload["errors"][index] = str(exc)
+            continue
 
-        iv_str = f"{yahoo_iv*100:.1f}" if yahoo_iv else ""
-        try:
-            ii = input(f"  IV ATM % [{iv_str}]: ").strip().replace("%", "")
-            inputs["iv"] = float(ii) / 100.0 if ii else None
-        except (ValueError, EOFError):
-            inputs["iv"] = None
+        payload["markets"][index] = snapshot.to_dict()
+        payload["warnings"].extend(snapshot.warnings)
 
-    console.print("\n[bold magenta]── Consultando a DeepSeek V4... ──[/bold magenta]\n")
-    with console.status("[cyan]Analizando spreads con IA...[/cyan]", spinner="dots"):
-        result = run_analysis(
-            dax_price=dax_inputs.get("price"),
-            dax_iv=dax_inputs.get("iv"),
-            stoxx_price=stoxx_inputs.get("price"),
-            stoxx_iv=stoxx_inputs.get("iv"),
-            expiry_type=expiry_type,
+        spot = snapshot.spot.value
+        atm_iv = snapshot.atm_iv.value
+        if spot is None or atm_iv is None:      # build_snapshot ya lo impide, pero cerramos el tipo
+            payload["errors"][index] = "dato de mercado incompleto"
+            continue
+
+        dte_days = contract.days_to_expiry(now)
+        surface = VolSurface(atm=atm_iv, skew=sk)
+        expected_move = spot * surface.atm * (max(dte_days, 0.0) / 365.0) ** 0.5
+
+        payload["contracts"][index] = {
+            "ticker": contract.ticker,
+            "expiry": contract.expiry.isoformat(),
+            "kind": contract.kind,
+            "week": contract.week,
+            "expiry_time_cet": spec.expiry_time.strftime("%H:%M"),
+            "dte_days": round(dte_days, 3),
+            "expected_move": round(expected_move, 1),
+            "multiplier": spec.multiplier,
+            "strike_interval": spec.strike_interval,
+            "dividend_yield": spec.q,
+        }
+
+        candidates = build_candidates(index, contract, spot, surface, r, cfg)
+        accepted = rank(candidates, cfg)
+        rejected = [c for c in candidates if not c.accepted]
+        payload["candidates"][index] = [c.to_dict() for c in accepted]
+        payload["rejected"][index] = {
+            "count": len(rejected),
+            "top_reasons": _top_reasons(rejected),
+        }
+
+    payload["narrative"] = None
+    if use_llm and payload["candidates"]:
+        import analyst
+
+        payload["narrative"] = analyst.analyse(payload)
+    return payload
+
+
+def _top_reasons(rejected: list) -> list[dict]:
+    counts: dict[str, int] = {}
+    for spread in rejected:
+        for reason in spread.rejections:
+            counts[reason] = counts.get(reason, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    return [{"reason": reason, "count": n} for reason, n in ordered]
+
+
+# --------------------------------------------------------------------------- #
+# Salida por terminal
+# --------------------------------------------------------------------------- #
+def render(payload: dict) -> None:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+
+    console = Console()
+    console.print(
+        Panel.fit(
+            f"[bold cyan]Eurex — ODAX / OESX[/bold cyan]  vencimiento [bold]{payload['expiry_type']}[/bold]\n"
+            f"[dim]{payload['generated_at']} · r={payload['risk_free_rate']:.2%} · skew={payload['vol_skew']}[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    for warning in payload["warnings"]:
+        console.print(f"[yellow]⚠ {warning}[/yellow]")
+    for index, error in payload["errors"].items():
+        console.print(f"[red]✗ {error}[/red]")
+
+    for index, info in payload["contracts"].items():
+        market = payload["markets"][index]
+        iv = market["atm_iv"]
+        console.print(
+            f"\n[bold]{index}[/bold] — [cyan]{info['ticker']}[/cyan] vence {info['expiry']} "
+            f"a las {info['expiry_time_cet']} CET → [yellow]{info['dte_days']:.2f} días[/yellow]\n"
+            f"  spot {market['spot']['value']:,.1f} ([dim]{market['spot']['source']}[/dim]) · "
+            f"IV ATM {(iv['value'] or 0) * 100:.1f}% ([dim]{iv['source']}[/dim]) · "
+            f"EM 1σ ±{info['expected_move']:,.0f} pts · q={info['dividend_yield']:.1%}"
         )
 
-    if "error" in result:
-        console.print(f"[red]{result['error']}[/red]")
-        return
+        rows = payload["candidates"].get(index, [])
+        if not rows:
+            rejected = payload["rejected"].get(index, {})
+            console.print(
+                f"  [yellow]Ninguna estructura supera los filtros[/yellow] "
+                f"({rejected.get('count', 0)} rechazadas)"
+            )
+            for item in rejected.get("top_reasons", []):
+                console.print(f"    [dim]{item['count']}× {item['reason']}[/dim]")
+            continue
 
-    for chain in result["chains"]:
-        print_summary(chain)
-        console.print()
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Estructura", justify="left", no_wrap=True)
+        for col in ("Ancho", "Crédito", "Máx L", "POP", "EV", "ROC", "BE", "Score"):
+            table.add_column(col, justify="right", no_wrap=True)
 
-    console.print(Panel.fit(result["response"], border_style="green", title="📈 Recomendaciones AI"))
-    console.print()
+        short_kind = {"bull_put": "BP", "bear_call": "BC", "iron_condor": "IC"}
+        for row in rows:
+            legs = row["legs"]
+            width = row.get("width_pts") or 0
+            if row["kind"] == "iron_condor":
+                strikes = f"{legs[0]['strike']:.0f}/{legs[2]['strike']:.0f}"
+            else:
+                strikes = f"{legs[0]['strike']:.0f}/{legs[1]['strike']:.0f}"
+            table.add_row(
+                f"{short_kind.get(row['kind'], '?')} {strikes}",
+                f"{width:.0f}",
+                f"{row['credit_pts']:.0f}p/{row['credit_eur']:.0f}€",
+                f"[red]{row['max_loss_eur']:.0f}€[/red]",
+                f"{row['pop']:.0%}",
+                f"{row['ev_eur']:+.0f}€",
+                f"{row['roc']:.1%}",
+                "/".join(f"{b:.0f}" for b in row["breakevens"]),
+                f"{row['score']:.2f}",
+            )
+        console.print(table)
+        console.print(
+            f"[dim]POP y EV con σ realizada {rows[0]['sigma_realized_pct']:.1f}% "
+            f"(implícita {rows[0]['atm_iv_pct']:.1f}%). BP=bull put, BC=bear call, IC=iron condor.[/dim]"
+        )
+        for row in rows:
+            for warning in row["warnings"]:
+                console.print(f"  [dim]· {row['name']}: {warning}[/dim]")
+
+    narrative = payload.get("narrative")
+    if narrative:
+        if narrative.get("error"):
+            console.print(f"\n[yellow]Análisis LLM no disponible: {narrative['error']}[/yellow]")
+        else:
+            console.print(Panel(narrative.get("summary", ""), title="Lectura del analista", border_style="green"))
+            for pick in narrative.get("picks", []):
+                console.print(f"\n[bold green]{pick['id']}[/bold green]\n  {pick['why']}")
+                for risk in pick["risks"]:
+                    console.print(f"  [yellow]riesgo:[/yellow] {risk}")
+                console.print(f"  [cyan]gestión:[/cyan] {pick['management']}")
+            for item in narrative.get("avoid", []):
+                console.print(f"[yellow]· {item}[/yellow]")
+
+    console.print(f"\n[dim]{payload['disclaimer']}[/dim]")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Estructuras de crédito ODAX / OESX (Eurex)")
+    parser.add_argument("--index", default="DAX,STOXX", help="DAX, STOXX o ambos separados por coma")
+    parser.add_argument("--expiry", default="semanal", choices=sorted(EXPIRY_MAP), help="vencimiento objetivo")
+    parser.add_argument("--spot", action="append", metavar="IDX=PRECIO", help="precio de contado manual")
+    parser.add_argument("--iv", action="append", metavar="IDX=IV", help="IV ATM manual en tanto por uno (0.256)")
+    parser.add_argument("--no-llm", action="store_true", help="solo tabla determinista")
+    parser.add_argument("--json", action="store_true", help="salida JSON completa")
+    parser.add_argument("--min-pop", type=float, default=None)
+    parser.add_argument("--max-width", type=int, default=None, help="ancho máximo en ticks")
+    args = parser.parse_args(argv)
+
+    indices = tuple(i.strip().upper() for i in args.index.split(",") if i.strip())
+    unknown = [i for i in indices if i not in INDICES]
+    if unknown:
+        parser.error(f"índices desconocidos: {unknown}")
+
+    cfg = CandidateConfig()
+    if args.min_pop is not None:
+        cfg.min_pop = args.min_pop
+    if args.max_width is not None:
+        cfg.width_ticks = tuple(w for w in cfg.width_ticks if w <= args.max_width) or (args.max_width,)
+
+    try:
+        payload = run_analysis(
+            indices=indices,
+            expiry_type=args.expiry,
+            spot_overrides=_parse_pairs(args.spot),
+            iv_overrides=_parse_pairs(args.iv),
+            use_llm=not args.no_llm,
+            config=cfg,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        render(payload)
+
+    if len(payload["errors"]) == len(indices):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
