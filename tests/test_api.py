@@ -88,6 +88,20 @@ def test_sin_rv_el_sesgo_asumido_es_vender(client):
     assert len(creditos) >= 2
 
 
+def test_la_iv_con_coma_como_texto_se_rechaza(client):
+    """Si la coma llega como texto a la API, 422 con motivo: nunca un número inventado."""
+    r = client.post("/api/analyze", json={**BODY, "dax_iv": "20,5"})
+    assert r.status_code == 422
+    assert "float_parsing" in str(r.json()["detail"])
+
+
+def test_la_iv_con_coma_en_cli_se_normaliza():
+    """Regresión: 20,5 no debe convertirse en 205 (200%) ni en 20,5 (2050%)."""
+    assert engine._parse_pairs(["DAX=20,5"], percent=True) == {"DAX": pytest.approx(0.205)}
+    assert engine._parse_pairs(["DAX=20.5"], percent=True) == {"DAX": pytest.approx(0.205)}
+    assert engine._parse_pairs(["DAX=0,205"], percent=True) == {"DAX": pytest.approx(0.205)}
+
+
 def test_iv_manual_se_respeta_y_se_marca_como_tal(client):
     body = {**BODY, "dax_iv": 0.256}
     payload = client.post("/api/analyze", json=body).json()
