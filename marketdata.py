@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from eurex_calendar import SPECS
 
@@ -34,7 +34,7 @@ SPOT_PROVIDER = os.getenv("SPOT_PROVIDER", "yahoo").strip().lower()
 class Quote:
     value: float | None
     source: str                 # "yahoo:^GDAXI" | "manual" | "assumed" | "missing"
-    asof: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
+    asof: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     note: str = ""
 
     @property

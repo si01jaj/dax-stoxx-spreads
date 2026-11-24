@@ -39,7 +39,7 @@ class VolSurface:
     max_iv: float = 3.0
     _extra: dict = field(default_factory=dict, repr=False)
 
-    def with_atm(self, atm: float) -> VolSurface:
+    def with_atm(self, atm: float) -> "VolSurface":
         return VolSurface(atm, self.skew, self.skew_power, self.min_iv, self.max_iv)
 
     def iv(self, S: float, K: float, T: float, r: float, q: float) -> float:

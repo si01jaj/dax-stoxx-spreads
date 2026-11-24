@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import Any
 
 SYSTEM_PROMPT = (
     "Eres analista de opciones sobre índices europeos (Eurex: ODAX y OESX). "
@@ -67,7 +68,7 @@ def build_prompt(payload: dict, max_rows: int = 10) -> str:
             lines.append(f"- {idx}: ninguna estructura supera los filtros")
             continue
         for row in rows[:max_rows]:
-            legs = " / ".join(f"{leg['side'][0].upper()}{leg['kind'][0].upper()}{leg['strike']:.0f}" for leg in row["legs"])
+            legs = " / ".join(f"{l['side'][0].upper()}{l['kind'][0].upper()}{l['strike']:.0f}" for l in row["legs"])
             max_p = "ilimitado" if row["max_profit_eur"] is None else f"{row['max_profit_eur']} EUR"
             roc = "n/a" if row["roc"] is None else f"{row['roc']:.1%}"
             lines.append(

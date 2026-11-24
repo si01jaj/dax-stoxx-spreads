@@ -1,11 +1,19 @@
 services:
-  dax-stoxx:
+  dax-stoxx-spreads:
     build: .
+    image: dax-stoxx-spreads:2.2.2
     container_name: dax-stoxx-spreads
-    # Loopback: la entrada pública va por cloudflared/traefik. Publicar en 0.0.0.0
-    # se salta ufw y deja la API abierta a internet sin autenticación.
-    ports:
-      - "127.0.0.1:8001:8000"
+    restart: unless-stopped
     env_file:
       - .env
-    restart: unless-stopped
+    # Estándar del host: loopback + puerto fijo. No se publica en 0.0.0.0,
+    # así que no hace falta abrir ufw y cloudflared llega por 127.0.0.1.
+    ports:
+      - "127.0.0.1:8001:8000"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

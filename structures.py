@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from eurex_calendar import SPECS, Contract
+from eurex_calendar import Contract, SPECS
 from pricing import VolSurface, greeks, price, strike_for_delta
 
 SIGN = {"sell": 1.0, "buy": -1.0}
