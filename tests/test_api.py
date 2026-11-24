@@ -1,5 +1,4 @@
 """Tests de la API: validación, errores, auth y ausencia de bloqueo."""
-from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +6,6 @@ from fastapi.testclient import TestClient
 import api
 import main as engine
 import marketdata
-from eurex_calendar import Contract
 
 BODY = {
     "indices": ["DAX", "STOXX"],

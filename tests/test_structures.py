@@ -1,5 +1,5 @@
 """Tests de construcción de estructuras: aritmética, POP, EV y dirección."""
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -21,7 +21,7 @@ from structures import (
 
 SPOT = 25000.0
 R = 0.025
-NOW = datetime(2026, 11, 23, 11, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 23, 11, 0, tzinfo=UTC)
 CONTRACT = Contract("DAX", date(2026, 11, 27), "weekly", 4)          # ~4,04 días
 DTE = CONTRACT.days_to_expiry(NOW)
 T = DTE / 365.0

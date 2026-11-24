@@ -1,10 +1,10 @@
 """Tests del calendario de Eurex: festivos, vencimientos y tickers."""
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
 import eurex_calendar as cal
-from eurex_calendar import Contract, SPECS
+from eurex_calendar import SPECS, Contract
 
 
 def test_festivos_2026_oficiales():
@@ -69,25 +69,25 @@ def test_hora_de_vencimiento_por_indice():
 
 
 def test_dte_es_fraccion_de_dia_con_hora():
-    now = datetime(2026, 11, 23, 11, 0, tzinfo=timezone.utc)   # 12:00 CET
+    now = datetime(2026, 11, 23, 11, 0, tzinfo=UTC)   # 12:00 CET
     c = Contract("DAX", date(2026, 11, 27), "weekly", 4)       # vence 27 a las 13:00 CET
     assert c.days_to_expiry(now) == pytest.approx(4 + 1 / 24, abs=1e-6)
 
 
 def test_select_contract_semanal_regresion_11_diciembre():
-    now = datetime(2026, 12, 11, 10, 0, tzinfo=timezone.utc)  # 11:00 CET, aún negociable
+    now = datetime(2026, 12, 11, 10, 0, tzinfo=UTC)  # 11:00 CET, aún negociable
     c = cal.select_contract("DAX", "weekly", now=now)
     assert c.expiry == date(2026, 12, 11) and c.ticker == "ODX2"
 
 
 def test_select_contract_salta_vencimiento_inminente_y_navidad():
-    now = datetime(2026, 12, 11, 12, 45, tzinfo=timezone.utc)  # 13:45 CET: ya venció
+    now = datetime(2026, 12, 11, 12, 45, tzinfo=UTC)  # 13:45 CET: ya venció
     c = cal.select_contract("DAX", "weekly", now=now)
     assert c.expiry == date(2027, 1, 8) and c.ticker == "ODX2"
 
 
 def test_select_contract_mensual_y_saltos():
-    now = datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 23, 9, 0, tzinfo=UTC)
     assert cal.select_contract("DAX", "monthly", now=now, months_ahead=0).expiry == date(2026, 12, 18)
     assert cal.select_contract("DAX", "monthly", now=now, months_ahead=1).expiry == date(2027, 1, 15)
     assert cal.select_contract("DAX", "monthly", now=now, months_ahead=2).expiry == date(2027, 2, 19)
@@ -95,7 +95,7 @@ def test_select_contract_mensual_y_saltos():
 
 def test_sin_vencimiento_por_la_noche_no_falla():
     """En la mañana del vencimiento el contrato de hoy sigue siendo válido si falta >30 min."""
-    now = datetime(2026, 11, 27, 8, 0, tzinfo=timezone.utc)   # 09:00 CET, vence 13:00 CET
+    now = datetime(2026, 11, 27, 8, 0, tzinfo=UTC)   # 09:00 CET, vence 13:00 CET
     c = cal.select_contract("DAX", "weekly", now=now)
     assert c.expiry == date(2026, 11, 27)
 

@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from eurex_calendar import SPECS, ExpiryKind, select_contract
 from marketdata import build_snapshot
@@ -101,7 +101,7 @@ def run_analysis(
     r = float(os.getenv("RISK_FREE_RATE", "0.025")) if risk_free is None else risk_free
     sk = float(os.getenv("VOL_SKEW", "0.0217")) if skew is None else skew
     cfg = config or CandidateConfig()
-    now = now or datetime.now(tz=timezone.utc)
+    now = now or datetime.now(tz=UTC)
 
     payload: dict = {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -228,7 +228,7 @@ def render(payload: dict) -> None:
 
     for warning in payload["warnings"]:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
-    for index, error in payload["errors"].items():
+    for error in payload["errors"].values():
         console.print(f"[red]✗ {error}[/red]")
 
     for index, info in payload["contracts"].items():
@@ -256,7 +256,7 @@ def render(payload: dict) -> None:
                 console.print(f"    [dim]{item['count']}× {item['reason']}[/dim]")
             continue
 
-        for direction, kinds, titulo, estilo in (
+        for direction, _kinds, titulo, estilo in (
             ("credit", CREDIT_KINDS, "crédito — cobras prima", "yellow"),
             ("debit", DEBIT_KINDS, "débito — pagas prima", "green"),
         ):
