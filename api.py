@@ -25,7 +25,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-import analyst
 import main as engine
 import marketdata
 
@@ -116,9 +115,9 @@ def _context(payload: dict) -> str:
             f"vol realizada esperada {regime.get('realized_vol_pct')}% (fuente {regime.get('source')}), "
             f"sesgo {regime.get('bias')}."
         )
-    for index, rows in payload["candidates"].items():
+    for rows in payload["candidates"].values():
         for row in rows:
-            legs = " / ".join(f"{l['side']} {l['kind']} {l['strike']:.0f}" for l in row["legs"])
+            legs = " / ".join(f"{leg['side']} {leg['kind']} {leg['strike']:.0f}" for leg in row["legs"])
             max_p = "ilimitado" if row["max_profit_eur"] is None else f"{row['max_profit_eur']} EUR"
             roc = "n/a" if row["roc"] is None else f"{row['roc']:.1%}"
             lines.append(

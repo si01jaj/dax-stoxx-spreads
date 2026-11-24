@@ -8,3 +8,5 @@ ignore = ["E501"]
 
 [lint.per-file-ignores]
 "tests/*" = ["B011"]
+# FastAPI exige la llamada Query(...) como valor por defecto; no es un bug.
+"api.py" = ["B008"]
