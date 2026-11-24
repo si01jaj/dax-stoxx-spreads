@@ -1,4 +1,4 @@
-"""Tests de la capa HTTP: validación y estado, sin llamar al LLM ni a Yahoo."""
+"""Tests de la capa HTTP (api.py): validación y estado, sin red ni LLM."""
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,38 +10,57 @@ def client():
     return TestClient(api.app)
 
 
+@pytest.fixture(autouse=True)
+def sin_token(monkeypatch):
+    """El token es opcional (solo si APP_TOKEN está definido)."""
+    monkeypatch.setattr(api, "APP_TOKEN", "")
+
+
 def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json()["status"] == "ok"
+    cuerpo = r.json()
+    assert cuerpo["status"] == "ok"
+    assert cuerpo["auth_required"] is False
 
 
 def test_analyze_rechaza_vencimiento_invalido(client):
-    # Antes cualquier valor desconocido caía silenciosamente en el mensual.
     r = client.post("/api/analyze", json={"expiry_type": "trimestral"})
     assert r.status_code == 422
 
 
-def test_analyze_rechaza_precios_absurdos(client):
+def test_analyze_rechaza_precio_negativo(client):
     r = client.post("/api/analyze", json={"dax_price": -5})
     assert r.status_code == 422
 
 
-def test_chat_sin_analisis_previo_da_400(client):
-    api._context.clear()
-    r = client.post("/api/chat", json={"message": "¿qué hago?"})
-    assert r.status_code == 400
-
-
-def test_chat_rechaza_mensaje_vacio(client):
-    r = client.post("/api/chat", json={"message": ""})
+def test_analyze_rechaza_precio_absurdo(client):
+    r = client.post("/api/analyze", json={"dax_price": 5_000_000})
     assert r.status_code == 422
 
 
-def test_contexto_acotado():
-    api._context.clear()
-    for i in range(api.MAX_CONTEXT_TURNS + 10):
-        api._context.append(f"turno {i} " + "x" * 1000)
-    texto = api._context_text()
-    assert len(texto) <= api.MAX_CONTEXT_CHARS
-    assert len(api._context) == api.MAX_CONTEXT_TURNS
+def test_analyze_rechaza_iv_fuera_de_rango(client):
+    r = client.post("/api/analyze", json={"dax_iv": 5.0})
+    assert r.status_code == 422
+
+
+def test_analyze_rechaza_indice_desconocido(client):
+    r = client.post("/api/analyze", json={"indices": ["IBEX"]})
+    assert r.status_code == 422
+
+
+def test_analyze_rechaza_pop_imposible(client):
+    r = client.post("/api/analyze", json={"min_pop": 0.2})
+    assert r.status_code == 422
+
+
+def test_el_dashboard_sirve_el_html(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "favicon.svg" in r.text
+
+
+def test_los_favicons_estan_disponibles(client):
+    assert client.get("/favicon.svg").status_code == 200
+    assert client.get("/favicon.ico").status_code == 200

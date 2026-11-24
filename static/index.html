@@ -3,209 +3,418 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DAX & STOXX 50 - Spread Recomendador</title>
+    <title>Eurex — Estructuras ODAX / OESX</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
     <link rel="shortcut icon" href="/favicon.ico">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <meta name="theme-color" content="#0d1117">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>DAX & STOXX 50 — Spread Recomendador</h1>
-            <p>Análisis del próximo vencimiento semanal con IA (DeepSeek V4)</p>
-        </header>
+<div class="container">
+    <header>
+        <h1>Eurex · ODAX / OESX</h1>
+        <p>Estructuras de crédito y débito sobre DAX 40 y EURO STOXX 50, calculadas en Python</p>
+    </header>
 
-        <div id="params">
-            <div class="card">
-                <h3>DAX 40 (ODAX)</h3>
-                <div class="row">
-                    <div class="col">
-                        <label>Precio subyacente</label>
-                        <input type="text" id="dax-price" placeholder="Cargando...">
-                        <div class="hint" id="dax-price-hint"></div>
-                    </div>
-                    <div class="col">
-                        <label>IV ATM %</label>
-                        <input type="text" id="dax-iv" placeholder="Cargando...">
-                        <div class="hint" id="dax-iv-hint"></div>
-                    </div>
+    <section class="card">
+        <div class="grid top">
+            <div class="field">
+                <label>Índices</label>
+                <div class="checks">
+                    <label class="check"><input type="checkbox" id="idx-dax" checked> DAX 40 (ODAX)</label>
+                    <label class="check"><input type="checkbox" id="idx-stoxx" checked> STOXX 50 (OESX)</label>
                 </div>
             </div>
-
-            <div class="card">
-                <h3>EURO STOXX 50 (OESX)</h3>
-                <div class="row">
-                    <div class="col">
-                        <label>Precio subyacente</label>
-                        <input type="text" id="stoxx-price" placeholder="Cargando...">
-                        <div class="hint" id="stoxx-price-hint"></div>
-                    </div>
-                    <div class="col">
-                        <label>IV ATM %</label>
-                        <input type="text" id="stoxx-iv" placeholder="Cargando...">
-                        <div class="hint" id="stoxx-iv-hint"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div id="expiry-info" style="text-align:center;color:#8b949e;font-size:0.85rem;margin-bottom:0.75rem;"></div>
-
-            <div style="text-align:center;margin-bottom:0.75rem">
-                <label style="color:#8b949e;font-size:0.8rem;margin-right:0.5rem">Vencimiento:</label>
-                <select id="expiry-type" onchange="loadDefaults()" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:0.4rem 0.75rem;font-size:0.85rem;font-family:inherit;outline:none;cursor:pointer">
-                    <option value="semanal">Semanal</option>
-                    <option value="mensual">Mensual</option>
-                    <option value="2meses">2 meses</option>
-                    <option value="3meses">3 meses</option>
+            <div class="field">
+                <label for="expiry">Vencimiento</label>
+                <select id="expiry">
+                    <option value="semanal">Semanal (próximo no mensual)</option>
+                    <option value="mensual">Mensual (3er viernes)</option>
+                    <option value="2m">2 meses</option>
+                    <option value="3m">3 meses</option>
                 </select>
             </div>
-
-            <button id="analyze-btn" onclick="analyze()">Analizar spreads</button>
-        </div>
-
-        <div id="loading">
-            <span class="spinner"></span>
-            <span>Analizando con DeepSeek V4...</span>
-        </div>
-
-        <div id="output" class="card"></div>
-
-        <div id="chat-section" style="display:none" class="card">
-            <h3>💬 Conversar sobre el análisis</h3>
-            <div id="chat-history"></div>
-            <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
-                <input type="text" id="chat-input" placeholder="Pregunta: ¿por qué Bear Call y no Iron Condor?" style="flex:1">
-                <button id="chat-btn" onclick="sendChat()" style="background:#238636;border:none;border-radius:6px;color:#fff;padding:0.5rem 1rem;cursor:pointer;font-weight:600">Enviar</button>
+            <div class="field">
+                <label>Redacción del analista (LLM)</label>
+                <label class="check"><input type="checkbox" id="narrative" checked> incluir texto</label>
+            </div>
+            <div class="field">
+                <label for="token">Token (si la API lo exige)</label>
+                <input type="password" id="token" placeholder="opcional" autocomplete="off">
             </div>
         </div>
 
-        <div class="disclaimer">
-            Esta herramienta es para fines educativos y de análisis. No constituye consejo financiero.
+        <div class="grid">
+            <div class="field">
+                <label>DAX — precio</label>
+                <input type="text" id="dax-price" placeholder="cargando…" inputmode="decimal">
+                <span class="hint" id="dax-price-hint"></span>
+            </div>
+            <div class="field">
+                <label>DAX — IV ATM % <em>(del vencimiento)</em></label>
+                <input type="text" id="dax-iv" placeholder="p.ej. 25.6" inputmode="decimal">
+                <span class="hint" id="dax-iv-hint"></span>
+            </div>
+            <div class="field">
+                <label>DAX — vol realizada % <em>(opcional)</em></label>
+                <input type="text" id="dax-rv" placeholder="p.ej. 28" inputmode="decimal">
+                <span class="hint">si la dejas vacía se asume IV × 0,90</span>
+            </div>
+            <div class="field">
+                <label>STOXX — precio</label>
+                <input type="text" id="stoxx-price" placeholder="cargando…" inputmode="decimal">
+                <span class="hint" id="stoxx-price-hint"></span>
+            </div>
+            <div class="field">
+                <label>STOXX — IV ATM % <em>(del vencimiento)</em></label>
+                <input type="text" id="stoxx-iv" placeholder="p.ej. 22.0" inputmode="decimal">
+                <span class="hint" id="stoxx-iv-hint"></span>
+            </div>
+            <div class="field">
+                <label>STOXX — vol realizada % <em>(opcional)</em></label>
+                <input type="text" id="stoxx-rv" placeholder="p.ej. 20" inputmode="decimal">
+                <span class="hint">si la dejas vacía se asume IV × 0,90</span>
+            </div>
         </div>
-    </div>
 
-    <script>
-        async function loadDefaults() {
-            try {
-                const expType = document.getElementById('expiry-type').value;
-                const r = await fetch('/api/defaults?expiry_type=' + expType);
-                const data = await r.json();
-                const labels = {'semanal': 'Semanal', 'mensual': 'Mensual', '2meses': '2 meses', '3meses': '3 meses'};
-                document.getElementById('expiry-info').textContent =
-                    labels[expType] + ' — ' + data.expiry + ' (' + data.dte + ' DTE)';
+        <div class="actions">
+            <button id="run">Analizar</button>
+            <span class="hint" id="status"></span>
+        </div>
+    </section>
 
-                const dax = data.defaults['DAX 40'];
-                document.getElementById('dax-price').value = dax.yahoo_price.toFixed(1);
-                document.getElementById('dax-price').placeholder = dax.yahoo_price.toFixed(1);
-                const daxIv = dax.yahoo_iv_pct;
-                if (daxIv) {
-                    document.getElementById('dax-iv').value = daxIv.toFixed(1);
-                    document.getElementById('dax-iv-hint').textContent = 'Yahoo: ' + daxIv.toFixed(1) + '%';
-                } else {
-                    document.getElementById('dax-iv').placeholder = 'Ej: 25.6';
-                    document.getElementById('dax-iv-hint').textContent = 'No disponible en Yahoo';
-                }
+    <div id="warnings"></div>
+    <div id="results"></div>
 
-                const stoxx = data.defaults['EURO STOXX 50'];
-                document.getElementById('stoxx-price').value = stoxx.yahoo_price.toFixed(1);
-                document.getElementById('stoxx-price').placeholder = stoxx.yahoo_price.toFixed(1);
-                const stoxxIv = stoxx.yahoo_iv_pct;
-                if (stoxxIv) {
-                    document.getElementById('stoxx-iv').value = stoxxIv.toFixed(1);
-                    document.getElementById('stoxx-iv-hint').textContent = 'Yahoo: ' + stoxxIv.toFixed(1) + '%';
-                } else {
-                    document.getElementById('stoxx-iv').placeholder = 'Ej: 20.0';
-                    document.getElementById('stoxx-iv-hint').textContent = 'No disponible en Yahoo';
-                }
+    <section class="card" id="narrative-card" hidden>
+        <h2>Lectura del analista</h2>
+        <pre id="narrative-summary"></pre>
+        <div id="narrative-picks"></div>
+        <div id="narrative-avoid"></div>
+    </section>
 
-                document.getElementById('dax-price-hint').textContent = 'Yahoo: ' + dax.yahoo_price.toFixed(1);
-                document.getElementById('stoxx-price-hint').textContent = 'Yahoo: ' + stoxx.yahoo_price.toFixed(1);
-            } catch(e) {
-                document.getElementById('expiry-info').textContent = 'Error cargando datos de Yahoo: ' + e.message;
-            }
+    <section class="card" id="chat-card" hidden>
+        <h2>Preguntas sobre este análisis</h2>
+        <div id="chat-history"></div>
+        <div class="actions">
+            <input type="text" id="chat-input" placeholder="p.ej. ¿qué pasa si el DAX cae 2σ?">
+            <button id="chat-send">Enviar</button>
+        </div>
+        <p class="hint">El asistente solo puede usar las cifras de este análisis; si falta un dato debe decirlo.</p>
+    </section>
+
+    <footer>
+        Herramienta de análisis, no asesoramiento financiero. Cifras teóricas sin comisiones,
+        horquilla ni margen PRMS. Precio e IV se introducen a mano desde el bróker; la calidad del
+        resultado depende de esos datos. La IV (y la vol realizada, si la aportas) debe ser la del
+        vencimiento seleccionado.
+    </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sessionId = Math.random().toString(36).slice(2, 10);
+
+const ETIQUETA = {
+    bull_put: 'BP', bear_call: 'BC', iron_condor: 'IC',
+    bull_call: 'BCd', bear_put: 'BPd', straddle: 'STD', strangle: 'STR',
+};
+const NOMBRE = {
+    bull_put: 'Bull put', bear_call: 'Bear call', iron_condor: 'Iron condor',
+    bull_call: 'Bull call', bear_put: 'Bear put', straddle: 'Straddle', strangle: 'Strangle',
+};
+
+function tokenHeaders() {
+    const t = $('token').value.trim();
+    return t ? {'X-App-Token': t} : {};
+}
+
+function num(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = parseFloat(String(v).replace(',', '.'));
+    return Number.isFinite(n) ? n : null;
+}
+
+function pct(v, d = 1) {
+    return v === null || v === undefined ? '—' : (v * 100).toFixed(d) + '%';
+}
+
+function eur(n, d = 0, signo = false) {
+    if (n === null || n === undefined) return '∞';
+    const pref = signo && n > 0 ? '+' : '';
+    return pref + Number(n).toLocaleString('es-ES', {minimumFractionDigits: d, maximumFractionDigits: d}) + ' €';
+}
+
+function el(tag, text, cls) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (cls) node.className = cls;
+    return node;
+}
+
+async function loadDefaults() {
+    const exp = $('expiry').value;
+    $('status').textContent = 'cargando datos de mercado…';
+    try {
+        const r = await fetch('/api/defaults?expiry_type=' + exp, {headers: tokenHeaders()});
+        const data = await r.json();
+        if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : r.status);
+        for (const [key, id] of [['DAX', 'dax'], ['STOXX', 'stoxx']]) {
+            const market = (data.markets || {})[key];
+            if (!market) continue;
+            const spot = market.spot.value;
+            const iv = market.atm_iv.value;
+            $(id + '-price').value = spot !== null ? spot.toFixed(1) : '';
+            $(id + '-price-hint').textContent = market.spot.source;
+            $(id + '-iv').value = iv !== null ? (iv * 100).toFixed(1) : '';
+            $(id + '-iv-hint').textContent = iv === null ? 'manual: cópiala del bróker' : market.atm_iv.source;
         }
+        const c = (data.contracts || {}).DAX || (data.contracts || {}).STOXX;
+        $('status').textContent = c
+            ? `${c.ticker} · vence ${c.expiry} · ${c.dte_days.toFixed(2)} días`
+            : '';
+    } catch (e) {
+        $('status').textContent = 'sin datos de Yahoo: introduce precio e IV a mano';
+    }
+}
 
-        function getVal(id) {
-            const v = document.getElementById(id).value.trim().replace(',', '');
-            return v ? parseFloat(v) : null;
+function tablaDireccion(index, rows, titulo, clase) {
+    const block = el('div', null, 'block');
+    block.appendChild(el('h3', titulo, 'block-title ' + clase));
+
+    const wrap = el('div', null, 'table-wrap');
+    const table = el('table');
+    const thead = el('thead');
+    const hr = el('tr');
+    const cols = ['Estructura', 'Prima', 'Máx. beneficio', 'Máx. pérdida', 'POP', 'EV', 'ROC', 'Breakeven'];
+    for (const h of cols) hr.appendChild(el('th', h));
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    const tbody = el('tbody');
+    let ultimo = null;
+    for (const row of rows) {
+        if (ultimo !== null && row.kind !== ultimo) {
+            const sep = el('tr', null, 'sep');
+            sep.appendChild(el('td', `${NOMBRE[row.kind]}`, 'sep-label')).colSpan = cols.length;
+            tbody.appendChild(sep);
         }
+        ultimo = row.kind;
 
-        async function analyze() {
-            const btn = document.getElementById('analyze-btn');
-            const loading = document.getElementById('loading');
-            const output = document.getElementById('output');
-            const chatSection = document.getElementById('chat-section');
+        const tr = el('tr');
+        const trk = row.kind === 'iron_condor'
+            ? row.legs.filter((l) => l.side === 'sell').map((l) => l.strike).join(' / ')
+            : row.kind === 'straddle'
+                ? String(row.legs[0].strike)
+                : row.legs.map((l) => l.strike).join(' / ');
+        const label = el('td', null, 'struct');
+        label.appendChild(el('span', ETIQUETA[row.kind] || row.kind, 'tag ' + clase));
+        label.appendChild(el('span', ' ' + trk, 'strikes'));
+        if (row.width_pts) label.appendChild(el('span', ` · ${row.width_pts.toFixed(0)}`, 'width'));
+        tr.appendChild(label);
 
-            btn.disabled = true;
-            loading.style.display = 'flex';
-            output.style.display = 'none';
-            output.innerHTML = '';
-            chatSection.style.display = 'none';
-            document.getElementById('chat-history').innerHTML = '';
+        tr.appendChild(el('td', eur(row.premium_eur, 0, true), row.premium_eur >= 0 ? 'pos' : 'neg'));
+        tr.appendChild(el('td', eur(row.max_profit_eur)));
+        tr.appendChild(el('td', eur(row.max_loss_eur), 'strong-neg'));
+        tr.appendChild(el('td', pct(row.pop, 0)));
+        tr.appendChild(el('td', eur(row.ev_eur, 0, true), row.ev_eur >= 0 ? 'pos' : 'neg'));
+        tr.appendChild(el('td', row.roc === null ? '—' : pct(row.roc, 0)));
+        tr.appendChild(el('td', row.breakevens.map((b) => b.toFixed(0)).join(' / '), 'be'));
 
-            try {
-                const r = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        dax_price: getVal('dax-price'),
-                        dax_iv: getVal('dax-iv') ? getVal('dax-iv') / 100 : null,
-                        stoxx_price: getVal('stoxx-price'),
-                        stoxx_iv: getVal('stoxx-iv') ? getVal('stoxx-iv') / 100 : null,
-                        expiry_type: document.getElementById('expiry-type').value
-                    })
-                });
-                const data = await r.json();
-                output.innerHTML = marked.parse(data.response || data.error || 'Sin respuesta');
-                output.style.display = 'block';
-                chatSection.style.display = 'block';
-            } catch(e) {
-                output.innerHTML = '<p style="color:#f85149">Error: ' + e.message + '</p>';
-                output.style.display = 'block';
-            } finally {
-                btn.disabled = false;
-                loading.style.display = 'none';
-            }
-        }
+        tr.title = row.legs.map((l) => `${l.side} ${l.kind} ${l.strike} @ ${l.iv_pct}% · ${l.price} pts · Δ${l.delta}`).join('\n');
+        tr.addEventListener('click', () => showScenarios(block, row));
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    block.appendChild(wrap);
+    return block;
+}
 
-        async function sendChat() {
-            const input = document.getElementById('chat-input');
-            const btn = document.getElementById('chat-btn');
-            const history = document.getElementById('chat-history');
-            const msg = input.value.trim();
-            if (!msg) return;
+function showScenarios(block, row) {
+    const old = block.querySelector('.scenarios');
+    if (old) old.remove();
+    const box = el('div', null, 'scenarios');
+    box.appendChild(el('h4', `Escenarios — ${row.name}`));
+    const table = el('table');
+    const thead = el('thead');
+    const hr = el('tr');
+    for (const h of ['Movimiento', 'Índice a vencimiento', 'P&L puntos', 'P&L €']) hr.appendChild(el('th', h));
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    for (const [k, v] of Object.entries(row.scenarios)) {
+        const tr = el('tr');
+        tr.appendChild(el('td', k));
+        tr.appendChild(el('td', v.spot.toLocaleString('es-ES', {maximumFractionDigits: 1})));
+        tr.appendChild(el('td', (v.pnl_pts >= 0 ? '+' : '') + v.pnl_pts.toFixed(1)));
+        tr.appendChild(el('td', eur(v.pnl_eur, 0, true), v.pnl_eur >= 0 ? 'pos' : 'neg'));
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    box.appendChild(table);
+    block.appendChild(box);
+}
 
-            history.innerHTML += '<div style="color:#58a6ff;margin:0.5rem 0"><strong>Tú:</strong> ' + marked.parse(msg) + '</div>';
-            input.value = '';
-            btn.disabled = true;
+function bloqueIndice(index, data) {
+    const card = el('section', null, 'card');
+    const contract = data.contracts[index];
+    const market = data.markets[index];
+    const regime = market.regime || {};
 
-            try {
-                const r = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: msg})
-                });
-                const data = await r.json();
-                history.innerHTML += '<div style="color:#c9d1d9;margin:0.75rem 0">' + marked.parse(data.response || data.error || '') + '</div>';
-                history.scrollTop = history.scrollHeight;
-            } catch(e) {
-                history.innerHTML += '<div style="color:#f85149;margin:0.5rem 0">Error: ' + e.message + '</div>';
-            } finally {
-                btn.disabled = false;
-            }
-        }
+    const head = el('div', null, 'index-head');
+    head.appendChild(el('h2', `${index} · ${contract.ticker}`));
+    head.appendChild(el('p',
+        `vence ${contract.expiry} a las ${contract.expiry_time_cet} CET · `
+        + `${contract.dte_days.toFixed(2)} días · EM 1σ ±${contract.expected_move.toLocaleString('es-ES')} pts · `
+        + `q=${(contract.dividend_yield * 100).toFixed(1)}% · ${contract.multiplier} €/punto`, 'meta'));
+    card.appendChild(head);
 
-        document.getElementById('chat-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') sendChat();
+    const chips = el('div', null, 'chips');
+    chips.appendChild(el('span', `spot ${market.spot.value.toLocaleString('es-ES', {maximumFractionDigits: 1})}`, 'chip'));
+    chips.appendChild(el('span', `IV ${pct(market.atm_iv.value)} (${market.atm_iv.source})`, 'chip'));
+    chips.appendChild(el('span', `RV ${regime.realized_vol_pct ?? '—'}% (${regime.source})`, 'chip'));
+    chips.appendChild(el('span', `sesgo: ${regime.bias}`, 'chip ' + (regime.bias === 'comprar' ? 'buy' : regime.bias === 'vender' ? 'sell' : '')));
+    card.appendChild(chips);
+    card.appendChild(el('p', regime.why || '', 'meta'));
+
+    const rows = data.candidates[index] || [];
+    if (!rows.length) {
+        card.appendChild(el('p', 'Ninguna estructura supera los filtros con estos datos.', 'warn'));
+        return card;
+    }
+    const creditos = rows.filter((r) => r.direction === 'credit');
+    const debitos = rows.filter((r) => r.direction === 'debit');
+    if (creditos.length) card.appendChild(tablaDireccion(index, creditos, 'Crédito — cobras prima', 'credit'));
+    if (debitos.length) card.appendChild(tablaDireccion(index, debitos, 'Débito — pagas prima', 'debit'));
+    card.appendChild(el('p',
+        'Clic en una fila para ver escenarios a vencimiento. 2 mejores de cada clase, ordenadas por EV/riesgo.',
+        'hint'));
+    return card;
+}
+
+async function analyze() {
+    const indices = [];
+    if ($('idx-dax').checked) indices.push('DAX');
+    if ($('idx-stoxx').checked) indices.push('STOXX');
+    if (!indices.length) { $('status').textContent = 'elige al menos un índice'; return; }
+
+    const missing = indices.filter((idx) => {
+        const field = $(idx === 'DAX' ? 'dax-iv' : 'stoxx-iv').value.trim();
+        return field === '' || num(field) === null || num(field) <= 0;
+    });
+    if (missing.length) {
+        $('status').textContent = `falta la IV ATM de ${missing.join(' y ')} — introdúcela desde tu bróker`;
+        for (const idx of missing) $(idx === 'DAX' ? 'dax-iv' : 'stoxx-iv').focus();
+        return;
+    }
+
+    const iv = (id) => { const v = num($(id).value); return v === null ? null : v / 100; };
+    const body = {
+        indices,
+        expiry_type: $('expiry').value,
+        dax_price: num($('dax-price').value),
+        dax_iv: iv('dax-iv'),
+        dax_rv: iv('dax-rv'),
+        stoxx_price: num($('stoxx-price').value),
+        stoxx_iv: iv('stoxx-iv'),
+        stoxx_rv: iv('stoxx-rv'),
+        narrative: $('narrative').checked,
+        session_id: sessionId,
+    };
+
+    $('run').disabled = true;
+    $('status').textContent = 'calculando…';
+    $('results').innerHTML = '';
+    $('warnings').innerHTML = '';
+    $('narrative-card').hidden = true;
+    $('chat-card').hidden = true;
+
+    try {
+        const r = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', ...tokenHeaders()},
+            body: JSON.stringify(body),
         });
+        const data = await r.json();
+        if (!r.ok) {
+            throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+        }
+        for (const w of data.warnings || []) $('warnings').appendChild(el('div', '⚠ ' + w, 'warn'));
+        for (const [idx, err] of Object.entries(data.errors || {})) {
+            $('warnings').appendChild(el('div', `✗ ${idx}: ${err}`, 'error'));
+        }
+        for (const idx of Object.keys(data.contracts)) {
+            $('results').appendChild(bloqueIndice(idx, data));
+        }
 
-        loadDefaults();
-    </script>
+        const narrative = data.narrative;
+        if (narrative && !narrative.error) {
+            $('narrative-card').hidden = false;
+            $('narrative-summary').textContent = narrative.summary || '';
+            const picks = $('narrative-picks');
+            picks.innerHTML = '';
+            for (const pick of narrative.picks || []) {
+                const div = el('div', null, 'pick');
+                div.appendChild(el('h3', pick.id));
+                div.appendChild(el('p', pick.why));
+                for (const risk of pick.risks || []) div.appendChild(el('p', '· ' + risk, 'hint'));
+                if (pick.management) div.appendChild(el('p', 'Gestión: ' + pick.management, 'meta'));
+                picks.appendChild(div);
+            }
+            const avoid = $('narrative-avoid');
+            avoid.innerHTML = '';
+            for (const a of narrative.avoid || []) avoid.appendChild(el('p', '· ' + a, 'warn'));
+            $('status').textContent = 'tabla calculada';
+        } else if (narrative && narrative.error) {
+            $('status').textContent = 'tabla calculada; sin redacción (' + narrative.error + ')';
+        } else {
+            $('status').textContent = 'tabla calculada';
+        }
+        $('chat-card').hidden = false;
+        $('chat-history').innerHTML = '';
+    } catch (e) {
+        $('warnings').appendChild(el('div', 'Error: ' + e.message, 'error'));
+        $('status').textContent = '';
+    } finally {
+        $('run').disabled = false;
+    }
+}
+
+async function sendChat() {
+    const input = $('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    const history = $('chat-history');
+    history.appendChild(el('p', 'Tú: ' + text, 'chat-user'));
+    input.value = '';
+    $('chat-send').disabled = true;
+    try {
+        const r = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', ...tokenHeaders()},
+            body: JSON.stringify({message: text, session_id: sessionId}),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+            throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+        }
+        history.appendChild(el('p', data.response, 'chat-bot'));
+        history.scrollTop = history.scrollHeight;
+    } catch (e) {
+        history.appendChild(el('p', 'Error: ' + e.message, 'error'));
+    } finally {
+        $('chat-send').disabled = false;
+    }
+}
+
+$('run').addEventListener('click', analyze);
+$('expiry').addEventListener('change', loadDefaults);
+$('chat-send').addEventListener('click', sendChat);
+$('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+loadDefaults();
+</script>
 </body>
 </html>
